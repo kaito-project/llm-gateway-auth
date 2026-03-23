@@ -1,6 +1,9 @@
-IMG ?= llm-authz:latest
-CHART_DIR ?= chart/llm-authz
-RELEASE_NAME ?= llm-authz
+# Image URL to use all building/pushing image targets
+IMG ?= llm-gateway-auth:latest
+
+# Helm configuration
+CHART_DIR ?= chart/llm-gateway-auth
+RELEASE_NAME ?= llm-gateway-auth
 NAMESPACE ?= llm-gateway
 
 # Container runtime: auto-detect docker or podman. Override with:
@@ -9,28 +12,111 @@ CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker ||
 
 .PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load
 
-all: generate fmt vet build
+# Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
+ifeq (,$(shell go env GOBIN))
+GOBIN=$(shell go env GOPATH)/bin
+else
+GOBIN=$(shell go env GOBIN)
+endif
 
-build:
-	go build -ldflags="-s -w" -o bin/llm-authz ./cmd/
+# Setting SHELL to bash allows bash commands to be executed by recipes.
+SHELL = /usr/bin/env bash -o pipefail
+.SHELLFLAGS = -ec
 
-test:
-	go test ./... -coverprofile=cover.out -count=1
+## --------------------------------------
+## Tooling Binaries
+## --------------------------------------
 
-lint:
-	golangci-lint run ./...
+##@ Tooling Binaries
 
-fmt:
-	go fmt ./...
+LOCALBIN ?= $(shell pwd)/bin
+$(LOCALBIN): ## Create folder for installing local binaries.
+	mkdir -p $(LOCALBIN)
 
-vet:
+.PHONY: localbin
+localbin: $(LOCALBIN) ## Create folder for installing local binaries.
+
+## Tool Binaries
+KUBECTL ?= kubectl
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+
+## Tool Versions
+CONTROLLER_TOOLS_VERSION ?= v0.20.1
+
+.PHONY: controller-gen
+controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary. If wrong version is installed, it will be overwritten.
+$(CONTROLLER_GEN): $(LOCALBIN)
+	test -s $(LOCALBIN)/controller-gen && $(LOCALBIN)/controller-gen --version | grep -q $(CONTROLLER_TOOLS_VERSION) || \
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+## --------------------------------------
+## Development
+## --------------------------------------
+
+##@ Development
+
+.PHONY: manifests
+manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole, and CustomResourceDefinition objects.
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+
+.PHONY: generate
+generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+	$(CONTROLLER_GEN) object paths="./api/..." output:object:dir=api/v1alpha1
+
+## --------------------------------------
+## Linting
+## --------------------------------------
+
+##@ Linting
+
+.PHONY: vet
+vet: ## Run go vet against code.
 	go vet ./...
 
-generate:
-	controller-gen object paths="./api/..." output:object:dir=api/v1alpha1
+.PHONY: lint
+lint: ## Run golangci-lint against code.
+	golangci-lint run ./...
 
-manifests:
-	controller-gen crd paths="./api/..." output:crd:dir=config/crd
+.PHONY: fmt
+fmt: ## Run go fmt against code.
+	go fmt ./...
+
+## --------------------------------------
+## Tests
+## --------------------------------------
+
+##@ Tests
+
+.PHONY: test
+test: ## Run unit tests.
+	go test ./... -coverprofile=cover.out -count=1
+
+## --------------------------------------
+## Build
+## --------------------------------------
+
+##@ Build
+
+.PHONY: all
+all: generate fmt vet build ## Run generate, fmt, vet, and build.
+
+.PHONY: build
+build: ## Build manager binary.
+	go build -ldflags="-s -w" -o bin/llm-gateway-auth ./cmd/
+
+.PHONY: tidy
+tidy: ## Run go mod tidy.
+	go mod tidy
+
+.PHONY: clean
+clean: ## Remove build artifacts.
+	rm -rf bin/ cover.out
+
+## --------------------------------------
+## Docker
+## --------------------------------------
+
+##@ Docker
 
 ## image-build: Build the container image (docker or podman)
 image-build:
@@ -44,33 +130,46 @@ image-push:
 docker-build: image-build
 docker-push: image-push
 
-install:
+## --------------------------------------
+## Deployment
+## --------------------------------------
+
+##@ Deployment
+
+.PHONY: install
+install: ## Install CRDs into the cluster.
 	kubectl apply -f config/crd/
 
-uninstall:
+.PHONY: uninstall
+uninstall: ## Uninstall CRDs from the cluster.
 	kubectl delete -f config/crd/
 
-deploy: install
+.PHONY: deploy
+deploy: install ## Deploy controller to the cluster.
 	kubectl apply -f config/rbac/
 	kubectl apply -f config/deployment/
 	kubectl apply -f config/istio/
 
-clean:
-	rm -rf bin/ cover.out
+## --------------------------------------
+## Helm
+## --------------------------------------
 
-tidy:
-	go mod tidy
+##@ Helm
 
-helm-install:
+.PHONY: helm-install
+helm-install: ## Install Helm chart.
 	helm install $(RELEASE_NAME) $(CHART_DIR) --namespace $(NAMESPACE) --create-namespace
 
-helm-upgrade:
+.PHONY: helm-upgrade
+helm-upgrade: ## Upgrade Helm release.
 	helm upgrade $(RELEASE_NAME) $(CHART_DIR) --namespace $(NAMESPACE)
 
-helm-uninstall:
+.PHONY: helm-uninstall
+helm-uninstall: ## Uninstall Helm release.
 	helm uninstall $(RELEASE_NAME) --namespace $(NAMESPACE)
 
-helm-template:
+.PHONY: helm-template
+helm-template: ## Render Helm chart templates locally.
 	helm template $(RELEASE_NAME) $(CHART_DIR) --namespace $(NAMESPACE)
 
 ## ─── Test Environment ────────────────────────────────────────────────────────
