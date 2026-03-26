@@ -48,6 +48,7 @@ type RotationSpec struct {
 }
 
 // SecretReference references a Secret in the same namespace.
+// The referenced Secret stores both the current key and, during a grace period, the previous key.
 type SecretReference struct {
 	// Name of the Secret.
 	Name string `json:"name"`
@@ -78,10 +79,6 @@ type APIKeyStatus struct {
 	// +optional
 	Phase APIKeyPhase `json:"phase,omitempty"`
 
-	// SecretRef references the controller-managed Secret that stores the API key plaintext.
-	// +optional
-	SecretRef *SecretReference `json:"secretRef,omitempty"`
-
 	// Current holds key ID and expiration info for the active key.
 	// +optional
 	Current KeyStatus `json:"current,omitempty"`
@@ -89,6 +86,10 @@ type APIKeyStatus struct {
 	// PreviousKey holds the previous key's info during the grace period after rotation.
 	// +optional
 	Previous *KeyStatus `json:"previousKey,omitempty"`
+
+	// SecretRef references the controller-managed Secret that stores the API key plaintext.
+	// +optional
+	SecretRef *SecretReference `json:"secretRef,omitempty"`
 
 	// LastRotatedAt is the timestamp of the last key rotation.
 	// Used as the base time for computing expiresAt after rotation.
