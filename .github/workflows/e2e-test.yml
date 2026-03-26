@@ -1,0 +1,122 @@
+# E2E Tests
+#
+# Runs e2e tests against a kind cluster with Istio.
+# Uses the same hack/setup-test-env.sh script as local development.
+name: E2E Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC nightly
+
+# Cancel in-flight runs for the same PR to save runner minutes.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Non-version config. Tool versions are loaded from versions.env at runtime.
+  KIND_CLUSTER_NAME: "llm-gateway-test"
+  NAMESPACE: "llm-gateway"
+
+jobs:
+  e2e:
+    name: kind + Istio E2E
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Load pinned versions from the single source of truth.
+      # Makes KIND_VERSION, ISTIO_VERSION, GO_VERSION, etc. available to all steps.
+      - name: Load versions from versions.env
+        run: cat versions.env >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      # Cache kind and istioctl binaries keyed on their versions.
+      # Version bumps automatically bust the cache.
+      - name: Cache kind binary
+        id: cache-kind
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/kind
+          key: kind-${{ env.KIND_VERSION }}-linux-amd64
+
+      - name: Cache istioctl binary
+        id: cache-istioctl
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/bin/istioctl
+          key: istioctl-${{ env.ISTIO_VERSION }}-linux-amd64
+
+      - name: Add ~/.local/bin to PATH
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Set up kind cluster with Istio
+        run: |
+          chmod +x hack/setup-test-env.sh
+          hack/setup-test-env.sh
+        env:
+          KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}
+          NAMESPACE: ${{ env.NAMESPACE }}
+          ISTIOCTL_INSTALL_DIR: ~/.local/bin
+
+      # TODO: Uncomment when Dockerfile exists
+      # - name: Build container image
+      #   run: make image-build IMG=llm-authz:e2e-${{ github.sha }}
+
+      # TODO: Uncomment when Dockerfile exists
+      # - name: Load image into kind
+      #   run: make kind-load IMG=llm-authz:e2e-${{ github.sha }}
+
+      # TODO: Uncomment when Helm chart / manifests are ready
+      # - name: Deploy
+      #   run: make helm-install IMG=llm-authz:e2e-${{ github.sha }} NAMESPACE=${{ env.NAMESPACE }}
+
+      # TODO: Replace with real e2e tests
+      - name: Run e2e tests (placeholder)
+        run: |
+          echo "Cluster is ready. Running placeholder tests..."
+          kubectl get nodes
+          kubectl get pods -A
+          kubectl get pods -n istio-system
+          echo "Placeholder complete. Add real e2e tests here."
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide || true
+          echo ""
+          echo "=== All Pods ==="
+          kubectl get pods -A -o wide || true
+          echo ""
+          echo "=== istiod logs ==="
+          kubectl logs -n istio-system -l app=istiod --tail=100 || true
+          echo ""
+          echo "=== Events (warnings only) ==="
+          kubectl get events -A --field-selector type=Warning --sort-by='.lastTimestamp' || true
+          echo ""
+          echo "=== Non-running pods ==="
+          kubectl get pods -A --no-headers | grep -v Running | grep -v Completed | while read -r ns pod rest; do
+            echo "--- ${ns}/${pod} ---"
+            kubectl describe pod "${pod}" -n "${ns}" || true
+          done
+
+      - name: Tear down kind cluster
+        if: always()
+        run: |
+          chmod +x hack/teardown-test-env.sh
+          hack/teardown-test-env.sh
+        env:
+          KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}

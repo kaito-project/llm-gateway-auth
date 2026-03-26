@@ -1,0 +1,33 @@
+# kind cluster configuration for llm-gateway-auth e2e testing.
+#
+# Topology: single control-plane node
+# - Keeps the memory footprint low (~1.5GB) so it fits in resource-constrained
+#   environments (Podman default 2GB VM, free GitHub Actions runner).
+# - extraPortMappings expose :80/:443 on the host for future ingress gateway
+#   testing without kubectl port-forward.
+# - Explicit pod/service subnets avoid collisions with common VPN ranges.
+# - Do NOT enable Istio CNI in kind -- it races with kindnet and causes
+#   silent pod network failures. Use the istio-init init container instead.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+
+nodes:
+  - role: control-plane
+    # Node image is set via --image flag in setup-test-env.sh (from versions.env).
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP
+
+networking:
+  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "10.96.0.0/12"
