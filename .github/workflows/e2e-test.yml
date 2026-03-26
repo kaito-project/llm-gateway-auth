@@ -69,7 +69,6 @@ jobs:
         env:
           KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}
           NAMESPACE: ${{ env.NAMESPACE }}
-          ISTIOCTL_INSTALL_DIR: ~/.local/bin
 
       # TODO: Uncomment when Dockerfile exists
       # - name: Build container image
