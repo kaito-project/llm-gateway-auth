@@ -35,7 +35,7 @@ jobs:
       # Load pinned versions from the single source of truth.
       # Makes KIND_VERSION, ISTIO_VERSION, GO_VERSION, etc. available to all steps.
       - name: Load versions from versions.env
-        run: cat versions.env >> "$GITHUB_ENV"
+        run: grep -v '^\s*#' versions.env | grep -v '^\s*$' >> "$GITHUB_ENV"
 
       - name: Set up Go
         uses: actions/setup-go@v5
