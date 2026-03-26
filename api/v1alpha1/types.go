@@ -20,7 +20,8 @@ type APIKeySpec struct {
 
 	// ExpiresIn is the duration after which the key expires, relative to creation time
 	// (or last rotation time). Uses Go duration format (e.g. "720h" for 30 days).
-	// Can be updated during rotation to change the new key's expiration.
+	// This field is immutable after creation; it can only be updated when RotateAt is
+	// set to trigger a new key generation.
 	// Omit for no expiry.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == '' || self.matches('^([0-9]+(h|m|s))+$')",message="must be a valid Go duration (e.g. 720h, 30m, 1h30m)"
@@ -50,9 +51,6 @@ type RotationSpec struct {
 type SecretReference struct {
 	// Name of the Secret.
 	Name string `json:"name"`
-
-	// Key within the Secret's data that holds the API key.
-	Key string `json:"key"`
 }
 
 // APIKeyPhase represents the current phase of the APIKey.
@@ -65,36 +63,32 @@ const (
 	PhaseExpired APIKeyPhase = "Expired"
 )
 
-// PreviousKeyStatus holds information about the previous key during a grace period.
-type PreviousKeyStatus struct {
-	// KeyID of the previous key.
+// KeyStatus holds information about a key.
+type KeyStatus struct {
+	// KeyID of the key.
 	KeyID string `json:"keyID"`
 
-	// ExpiresAt is when the previous key stops being valid (rotation time + gracePeriod).
+	// ExpiresAt is when the key stops being valid (rotation time + gracePeriod).
 	ExpiresAt metav1.Time `json:"expiresAt"`
 }
 
 // APIKeyStatus defines the observed state of APIKey.
 type APIKeyStatus struct {
-	// KeyID is the first 4 bytes of SHA-256(raw_key) as hex, for log identification.
-	// +optional
-	KeyID string `json:"keyID,omitempty"`
-
 	// Phase represents the current phase of the key.
 	// +optional
 	Phase APIKeyPhase `json:"phase,omitempty"`
-
-	// ExpiresAt is the computed expiration time.
-	// +optional
-	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// SecretRef references the controller-managed Secret that stores the API key plaintext.
 	// +optional
 	SecretRef *SecretReference `json:"secretRef,omitempty"`
 
+	// Current holds key ID and expiration info for the active key.
+	// +optional
+	Current KeyStatus `json:"current,omitempty"`
+
 	// PreviousKey holds the previous key's info during the grace period after rotation.
 	// +optional
-	PreviousKey *PreviousKeyStatus `json:"previousKey,omitempty"`
+	Previous *KeyStatus `json:"previousKey,omitempty"`
 
 	// LastRotatedAt is the timestamp of the last key rotation.
 	// Used as the base time for computing expiresAt after rotation.
@@ -112,9 +106,9 @@ type APIKeyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="KeyID",type=string,JSONPath=`.status.keyID`
+// +kubebuilder:printcolumn:name="KeyID",type=string,JSONPath=`.status.current.keyID`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="ExpiresAt",type=string,JSONPath=`.status.expiresAt`
+// +kubebuilder:printcolumn:name="ExpiresAt",type=string,JSONPath=`.status.current.expiresAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // APIKey is the Schema for the apikeys API.

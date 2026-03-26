@@ -15,13 +15,13 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.keyID
+    - jsonPath: .status.current.keyID
       name: KeyID
       type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.expiresAt
+    - jsonPath: .status.current.expiresAt
       name: ExpiresAt
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -56,7 +56,8 @@ spec:
                 description: |-
                   ExpiresIn is the duration after which the key expires, relative to creation time
                   (or last rotation time). Uses Go duration format (e.g. "720h" for 30 days).
-                  Can be updated during rotation to change the new key's expiration.
+                  This field is immutable after creation; it can only be updated when RotateAt is
+                  set to trigger a new key generation.
                   Omit for no expiry.
                 type: string
                 x-kubernetes-validations:
@@ -149,14 +150,22 @@ spec:
                   - type
                   type: object
                 type: array
-              expiresAt:
-                description: ExpiresAt is the computed expiration time.
-                format: date-time
-                type: string
-              keyID:
-                description: KeyID is the first 4 bytes of SHA-256(raw_key) as hex,
-                  for log identification.
-                type: string
+              current:
+                description: Current holds key ID and expiration info for the active
+                  key.
+                properties:
+                  expiresAt:
+                    description: ExpiresAt is when the key stops being valid (rotation
+                      time + gracePeriod).
+                    format: date-time
+                    type: string
+                  keyID:
+                    description: KeyID of the key.
+                    type: string
+                required:
+                - expiresAt
+                - keyID
+                type: object
               lastRotatedAt:
                 description: |-
                   LastRotatedAt is the timestamp of the last key rotation.
@@ -180,12 +189,12 @@ spec:
                   grace period after rotation.
                 properties:
                   expiresAt:
-                    description: ExpiresAt is when the previous key stops being valid
-                      (rotation time + gracePeriod).
+                    description: ExpiresAt is when the key stops being valid (rotation
+                      time + gracePeriod).
                     format: date-time
                     type: string
                   keyID:
-                    description: KeyID of the previous key.
+                    description: KeyID of the key.
                     type: string
                 required:
                 - expiresAt
@@ -195,14 +204,10 @@ spec:
                 description: SecretRef references the controller-managed Secret that
                   stores the API key plaintext.
                 properties:
-                  key:
-                    description: Key within the Secret's data that holds the API key.
-                    type: string
                   name:
                     description: Name of the Secret.
                     type: string
                 required:
-                - key
                 - name
                 type: object
             type: object
