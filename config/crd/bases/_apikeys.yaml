@@ -59,6 +59,9 @@ spec:
                   Can be updated during rotation to change the new key's expiration.
                   Omit for no expiry.
                 type: string
+                x-kubernetes-validations:
+                - message: must be a valid Go duration (e.g. 720h, 30m, 1h30m)
+                  rule: self == '' || self.matches('^([0-9]+(h|m|s))+$')
               prefix:
                 default: sk-
                 description: |-
@@ -75,6 +78,9 @@ spec:
                       Uses Go duration format (e.g. "24h", "168h" for 7 days).
                       Defaults to "24h".
                     type: string
+                    x-kubernetes-validations:
+                    - message: must be a valid Go duration (e.g. 720h, 30m, 1h30m)
+                      rule: self == '' || self.matches('^([0-9]+(h|m|s))+$')
                   rotateAt:
                     description: |-
                       RotateAt schedules an automatic key rotation at the specified UTC time (RFC3339 format).

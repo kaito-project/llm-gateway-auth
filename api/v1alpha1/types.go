@@ -23,6 +23,7 @@ type APIKeySpec struct {
 	// Can be updated during rotation to change the new key's expiration.
 	// Omit for no expiry.
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == '' || self.matches('^([0-9]+(h|m|s))+$')",message="must be a valid Go duration (e.g. 720h, 30m, 1h30m)"
 	ExpiresIn string `json:"expiresIn,omitempty"`
 
 	// Rotation configures the key rotation behavior.
@@ -41,6 +42,7 @@ type RotationSpec struct {
 	// Uses Go duration format (e.g. "24h", "168h" for 7 days).
 	// Defaults to "24h".
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == '' || self.matches('^([0-9]+(h|m|s))+$')",message="must be a valid Go duration (e.g. 720h, 30m, 1h30m)"
 	GracePeriod string `json:"gracePeriod,omitempty"`
 }
 
