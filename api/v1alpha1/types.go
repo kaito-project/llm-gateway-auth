@@ -81,7 +81,7 @@ type APIKeyStatus struct {
 
 	// Current holds key ID and expiration info for the active key.
 	// +optional
-	Current KeyStatus `json:"current,omitempty"`
+	Current *KeyStatus `json:"current,omitempty"`
 
 	// PreviousKey holds the previous key's info during the grace period after rotation.
 	// +optional
