@@ -35,29 +35,13 @@ jobs:
       # Load pinned versions from the single source of truth.
       # Makes KIND_VERSION, ISTIO_VERSION, GO_VERSION, etc. available to all steps.
       - name: Load versions from versions.env
-        run: cat versions.env >> "$GITHUB_ENV"
+        run: grep -v '^\s*#' versions.env | grep -v '^\s*$' >> "$GITHUB_ENV"
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-
-      # Cache kind and istioctl binaries keyed on their versions.
-      # Version bumps automatically bust the cache.
-      - name: Cache kind binary
-        id: cache-kind
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/bin/kind
-          key: kind-${{ env.KIND_VERSION }}-linux-amd64
-
-      - name: Cache istioctl binary
-        id: cache-istioctl
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/bin/istioctl
-          key: istioctl-${{ env.ISTIO_VERSION }}-linux-amd64
 
       - name: Add ~/.local/bin to PATH
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -69,7 +53,6 @@ jobs:
         env:
           KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}
           NAMESPACE: ${{ env.NAMESPACE }}
-          ISTIOCTL_INSTALL_DIR: ~/.local/bin
 
       # TODO: Uncomment when Dockerfile exists
       # - name: Build container image
