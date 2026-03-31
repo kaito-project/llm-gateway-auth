@@ -67,25 +67,3 @@ func TestKeyIDFromHash(t *testing.T) {
 		t.Errorf("expected a3f7c291, got %s", keyID)
 	}
 }
-
-func TestValidateKeyFormat(t *testing.T) {
-	tests := []struct {
-		key   string
-		valid bool
-	}{
-		{"sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB", true},
-		{"sk-llmgw-abcdefghijklmnopqrstuvwxyz01234", true},
-		{"sk-short", false},
-		{"not-a-key", false},
-		{"Bearer sk-llmgw-xxx", false},
-		{"", false},
-		{"sk-x-" + strings.Repeat("a", 30), true},
-	}
-
-	for _, tt := range tests {
-		got := ValidateKeyFormat(tt.key)
-		if got != tt.valid {
-			t.Errorf("ValidateKeyFormat(%q) = %v, want %v", tt.key, got, tt.valid)
-		}
-	}
-}

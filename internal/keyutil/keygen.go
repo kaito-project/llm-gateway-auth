@@ -61,8 +61,3 @@ func KeyIDFromHash(hashHex string) string {
 	}
 	return hashHex
 }
-
-// ValidateKeyFormat checks whether a key matches the expected sk-xxxx format.
-func ValidateKeyFormat(key string) bool {
-	return keyPattern.MatchString(key)
-}
