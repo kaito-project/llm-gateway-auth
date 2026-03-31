@@ -14,8 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
-	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
-	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
 func setupScheme() *runtime.Scheme {
@@ -37,8 +35,7 @@ func TestReconcile_InvalidName(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "not-default"},
@@ -46,26 +43,17 @@ func TestReconcile_InvalidName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if idx.Size() != 0 {
-		t.Error("expected empty index for invalid name")
-	}
 }
 
 func TestReconcile_NotFound(t *testing.T) {
 	s := setupScheme()
 	c := fake.NewClientBuilder().WithScheme(s).Build()
-	idx := keyindex.New()
-	idx.Upsert("oldhash", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "old"})
-
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if idx.Size() != 0 {
-		t.Error("expected index to be cleaned up on NotFound")
 	}
 }
 
@@ -82,8 +70,7 @@ func TestReconcile_GeneratesSecret(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	// First reconcile: should create Secret and set status.secretRef
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -116,16 +103,12 @@ func TestReconcile_GeneratesSecret(t *testing.T) {
 		t.Errorf("expected secretRef.name=llm-api-key, got %s", updated.Status.SecretRef.Name)
 	}
 
-	// Second reconcile: should read Secret and update index
+	// Second reconcile: should read Secret and update status
 	_, err = r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error on second reconcile: %v", err)
-	}
-
-	if idx.Size() != 1 {
-		t.Errorf("expected 1 entry in index, got %d", idx.Size())
 	}
 
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
@@ -165,18 +148,13 @@ func TestReconcile_ExistingSecretInStatus(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if idx.Size() != 1 {
-		t.Errorf("expected 1 entry in index, got %d", idx.Size())
 	}
 
 	var updated v1alpha1.APIKey
@@ -200,17 +178,13 @@ func TestReconcile_ExpiredKey(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if idx.Size() != 0 {
-		t.Error("expected empty index for expired key")
 	}
 
 	var updated v1alpha1.APIKey
@@ -238,8 +212,7 @@ func TestReconcile_SecretDeletedRegenerates(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	// First reconcile: detect missing Secret, clear secretRef
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -295,8 +268,7 @@ func TestReconcile_Rotation(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
@@ -306,11 +278,6 @@ func TestReconcile_Rotation(t *testing.T) {
 	}
 	if result.RequeueAfter == 0 {
 		t.Error("expected requeue after grace period")
-	}
-
-	// Verify index has 2 entries (current + previous)
-	if idx.Size() != 2 {
-		t.Errorf("expected 2 entries in index (current + previous), got %d", idx.Size())
 	}
 
 	// Verify Secret has both keys
@@ -343,16 +310,16 @@ func TestReconcile_Rotation(t *testing.T) {
 		t.Error("expected status.current.keyID to change after rotation")
 	}
 
-	// Verify rotateAt was cleared
-	if updated.Spec.Rotation != nil && updated.Spec.Rotation.RotateAt != nil {
-		t.Error("expected spec.rotation.rotateAt to be cleared")
+	// Verify spec.rotation.rotateAt was NOT mutated (controller should not write to spec)
+	if updated.Spec.Rotation == nil || updated.Spec.Rotation.RotateAt == nil {
+		t.Error("expected spec.rotation.rotateAt to be preserved (controller must not mutate spec)")
 	}
 
-	// Old key should still be findable in the index
-	oldHash := keyutil.HashKey(rawKey)
-	if _, ok := idx.Lookup(oldHash); !ok {
-		t.Error("expected old key to still be in index during grace period")
+	// Verify lastRotatedAt >= rotateAt (rotation acknowledged via status)
+	if updated.Status.LastRotatedAt.Time.Before(updated.Spec.Rotation.RotateAt.Time) {
+		t.Error("expected status.lastRotatedAt >= spec.rotation.rotateAt")
 	}
+
 }
 
 func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
@@ -392,8 +359,7 @@ func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
@@ -448,37 +414,19 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 			},
 			Previous: &v1alpha1.KeyStatus{
 				KeyID:     "prevkeyid",
-				ExpiresAt: pastTime, // Grace period already expired
+				ExpiresAt: &metav1.Time{Time: pastTime.Time}, // Grace period already expired
 			},
 		},
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	idx := keyindex.New()
-	r := &APIKeyReconciler{Client: c, KeyIndex: idx}
+	r := &APIKeyReconciler{Client: c}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Index should only have 1 entry (previous key expired)
-	if idx.Size() != 1 {
-		t.Errorf("expected 1 entry in index, got %d", idx.Size())
-	}
-
-	// Previous key should not be in index
-	prevHash := keyutil.HashKey(previousKey)
-	if _, ok := idx.Lookup(prevHash); ok {
-		t.Error("expected previous key to be removed from index after grace period")
-	}
-
-	// Current key should be in index
-	currentHash := keyutil.HashKey(rawKey)
-	if _, ok := idx.Lookup(currentHash); !ok {
-		t.Error("expected current key to be in index")
 	}
 
 	// Verify status.previous was cleared
@@ -493,5 +441,55 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &updatedSecret)
 	if _, ok := updatedSecret.Data["previousApiKey"]; ok {
 		t.Error("expected previousApiKey to be removed from Secret")
+	}
+}
+
+func TestReconcile_SecretConflictNotOwned(t *testing.T) {
+	s := setupScheme()
+
+	// Pre-existing Secret NOT owned by any APIKey
+	unownedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-api-key",
+			Namespace: "team-alpha",
+		},
+		Data: map[string][]byte{
+			"apiKey": []byte("someone-elses-key"),
+		},
+	}
+
+	apiKey := &v1alpha1.APIKey{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default",
+			Namespace: "team-alpha",
+			UID:       "test-uid-123",
+		},
+		Spec: v1alpha1.APIKeySpec{
+			Prefix: "sk-",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, unownedSecret).WithStatusSubresource(apiKey).Build()
+	r := &APIKeyReconciler{Client: c}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the unowned Secret data was NOT overwritten
+	var secret corev1.Secret
+	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &secret)
+	if string(secret.Data["apiKey"]) != "someone-elses-key" {
+		t.Error("expected unowned Secret data to remain unchanged")
+	}
+
+	// Verify APIKey is marked NotReady with SecretConflict
+	var updated v1alpha1.APIKey
+	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
+	if updated.Status.Phase != v1alpha1.PhasePending {
+		t.Errorf("expected phase Pending, got %s", updated.Status.Phase)
 	}
 }

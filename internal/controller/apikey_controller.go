@@ -19,7 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
-	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
@@ -28,7 +27,6 @@ const finalizerName = "kaito.sh/key-cleanup"
 // APIKeyReconciler reconciles APIKey objects.
 type APIKeyReconciler struct {
 	client.Client
-	KeyIndex *keyindex.Index
 }
 
 func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -37,8 +35,6 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	var apiKey v1alpha1.APIKey
 	if err := r.Get(ctx, req.NamespacedName, &apiKey); err != nil {
 		if errors.IsNotFound(err) {
-			r.KeyIndex.RemoveByNamespace(req.Namespace)
-			logger.Info("APIKey deleted, removed from index", "namespace", req.Namespace)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -65,7 +61,7 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if expiresAt != nil && expiresAt.Before(time.Now()) {
-		return ctrl.Result{}, r.handleExpiry(ctx, &apiKey, *expiresAt)
+		return ctrl.Result{}, r.handleExpiry(ctx, &apiKey, expiresAt)
 	}
 
 	prefix := apiKey.Spec.Prefix
@@ -95,10 +91,9 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Derive key identity and sync in-memory index
+	// Derive key identity
 	rawKey := string(secret.Data[keyutil.SecretKey])
 	keyID := keyutil.KeyIDFromHash(keyutil.HashKey(rawKey))
-	r.syncKeyIndex(&apiKey, secret, rawKey, expiresAt)
 
 	if err := r.updateActiveStatus(ctx, &apiKey, keyID, expiresAt); err != nil {
 		return ctrl.Result{}, err
@@ -134,12 +129,11 @@ func (r *APIKeyReconciler) markNotReady(ctx context.Context, apiKey *v1alpha1.AP
 	})
 }
 
-// handleDeletion removes the key from the index and cleans up the finalizer.
+// handleDeletion cleans up the finalizer when an APIKey is deleted.
 func (r *APIKeyReconciler) handleDeletion(ctx context.Context, apiKey *v1alpha1.APIKey) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	r.KeyIndex.RemoveByNamespace(apiKey.Namespace)
-	logger.Info("APIKey being deleted, removed from index", "namespace", apiKey.Namespace, "keyID", currentKeyID(apiKey))
+	logger.Info("APIKey being deleted", "namespace", apiKey.Namespace, "keyID", currentKeyID(apiKey))
 
 	if controllerutil.ContainsFinalizer(apiKey, finalizerName) {
 		controllerutil.RemoveFinalizer(apiKey, finalizerName)
@@ -179,17 +173,16 @@ func (r *APIKeyReconciler) computeExpiresAt(apiKey *v1alpha1.APIKey) (*time.Time
 	return &t, nil
 }
 
-// handleExpiry marks the key as expired and removes it from the index.
-func (r *APIKeyReconciler) handleExpiry(ctx context.Context, apiKey *v1alpha1.APIKey, expiresAt time.Time) error {
+// handleExpiry marks the key as expired.
+func (r *APIKeyReconciler) handleExpiry(ctx context.Context, apiKey *v1alpha1.APIKey, expiresAt *time.Time) error {
 	logger := log.FromContext(ctx)
 
-	r.KeyIndex.RemoveByNamespace(apiKey.Namespace)
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		obj.Status.Phase = v1alpha1.PhaseExpired
 		if obj.Status.Current == nil {
 			obj.Status.Current = &v1alpha1.KeyStatus{}
 		}
-		obj.Status.Current.ExpiresAt = metav1.NewTime(expiresAt)
+		obj.Status.Current.ExpiresAt = &metav1.Time{Time: *expiresAt}
 		meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
@@ -233,16 +226,22 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 		if !errors.IsAlreadyExists(err) {
 			return ctrl.Result{}, fmt.Errorf("failed to create secret: %w", err)
 		}
-		// Secret already exists (e.g. from previous failed reconcile), update it
-		if err := r.Get(ctx, types.NamespacedName{Namespace: apiKey.Namespace, Name: keyutil.SecretName}, secret); err != nil {
+		// Secret already exists – verify it is owned by this APIKey before updating
+		existing := &corev1.Secret{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: apiKey.Namespace, Name: keyutil.SecretName}, existing); err != nil {
 			return ctrl.Result{}, err
 		}
-		secret.Data = map[string][]byte{
+		if !metav1.IsControlledBy(existing, apiKey) {
+			return ctrl.Result{}, r.markNotReady(ctx, apiKey, "SecretConflict",
+				fmt.Sprintf("Secret %q already exists but is not owned by this APIKey", keyutil.SecretName))
+		}
+		existing.Data = map[string][]byte{
 			keyutil.SecretKey: []byte(result.RawKey),
 		}
-		if err := r.Update(ctx, secret); err != nil {
+		if err := r.Update(ctx, existing); err != nil {
 			return ctrl.Result{}, err
 		}
+		secret = existing
 	}
 
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
@@ -291,10 +290,21 @@ func (r *APIKeyReconciler) clearSecretRef(ctx context.Context, apiKey *v1alpha1.
 }
 
 // isRotationDue checks whether a scheduled rotation should execute now.
+// It returns true only when rotateAt is in the past and the controller has not
+// yet completed a rotation for that schedule (lastRotatedAt < rotateAt).
 func (r *APIKeyReconciler) isRotationDue(apiKey *v1alpha1.APIKey) bool {
-	return apiKey.Spec.Rotation != nil &&
-		apiKey.Spec.Rotation.RotateAt != nil &&
-		!apiKey.Spec.Rotation.RotateAt.Time.After(time.Now())
+	if apiKey.Spec.Rotation == nil || apiKey.Spec.Rotation.RotateAt == nil {
+		return false
+	}
+	rotateAt := apiKey.Spec.Rotation.RotateAt.Time
+	if rotateAt.After(time.Now()) {
+		return false
+	}
+	// Already completed for this schedule?
+	if apiKey.Status.LastRotatedAt != nil && !apiKey.Status.LastRotatedAt.Time.Before(rotateAt) {
+		return false
+	}
+	return true
 }
 
 // cleanupExpiredPreviousKey removes the previous key from the Secret
@@ -314,31 +324,7 @@ func (r *APIKeyReconciler) cleanupExpiredPreviousKey(ctx context.Context, apiKey
 	})
 }
 
-// syncKeyIndex updates the in-memory key index with current (and optionally previous) keys.
-func (r *APIKeyReconciler) syncKeyIndex(apiKey *v1alpha1.APIKey, secret *corev1.Secret, rawKey string, expiresAt *time.Time) {
-	hash := keyutil.HashKey(rawKey)
-	keyID := keyutil.KeyIDFromHash(hash)
-
-	entries := map[string]keyindex.TenantRecord{
-		hash: {
-			Namespace: apiKey.Namespace,
-			KeyID:     keyID,
-			ExpiresAt: expiresAt,
-		},
-	}
-	if apiKey.Status.Previous != nil {
-		if prevRawKey, ok := secret.Data[keyutil.PreviousSecretKey]; ok && len(prevRawKey) > 0 {
-			prevHash := keyutil.HashKey(string(prevRawKey))
-			prevExpiresAt := apiKey.Status.Previous.ExpiresAt.Time
-			entries[prevHash] = keyindex.TenantRecord{
-				Namespace: apiKey.Namespace,
-				KeyID:     apiKey.Status.Previous.KeyID,
-				ExpiresAt: &prevExpiresAt,
-			}
-		}
-	}
-	r.KeyIndex.SetNamespaceKeys(apiKey.Namespace, entries)
-}
+// syncKeyIndex was moved to the authz-plugin component (internal/indexsync).
 
 // updateActiveStatus sets the APIKey status to Active with the current key info.
 func (r *APIKeyReconciler) updateActiveStatus(ctx context.Context, apiKey *v1alpha1.APIKey, keyID string, expiresAt *time.Time) error {
@@ -348,7 +334,7 @@ func (r *APIKeyReconciler) updateActiveStatus(ctx context.Context, apiKey *v1alp
 			KeyID: keyID,
 		}
 		if expiresAt != nil {
-			obj.Status.Current.ExpiresAt = metav1.NewTime(*expiresAt)
+			obj.Status.Current.ExpiresAt = &metav1.Time{Time: *expiresAt}
 		}
 		obj.Status.Phase = v1alpha1.PhaseActive
 		obj.Status.LastSyncedAt = &now
@@ -356,7 +342,7 @@ func (r *APIKeyReconciler) updateActiveStatus(ctx context.Context, apiKey *v1alp
 			Type:               "Ready",
 			Status:             metav1.ConditionTrue,
 			Reason:             "Synced",
-			Message:            "Key is active and synced to in-memory index",
+			Message:            "Key is active",
 			LastTransitionTime: metav1.Now(),
 		})
 	})
@@ -389,8 +375,6 @@ func (r *APIKeyReconciler) computeRequeueAfter(apiKey *v1alpha1.APIKey, expiresA
 func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.APIKey, secret *corev1.Secret, prefix string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Read current key
-	currentRawKey := string(secret.Data[keyutil.SecretKey])
 	var currentKeyID string
 	if apiKey.Status.Current != nil {
 		currentKeyID = apiKey.Status.Current.KeyID
@@ -435,27 +419,9 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 		}
 	}
 
-	// Build index entries: new key + old key (grace period)
 	newHash := keyutil.HashKey(result.RawKey)
 	newKeyID := keyutil.KeyIDFromHash(newHash)
 	previousExpiresAt := rotationTime.Add(gracePeriod)
-
-	entries := map[string]keyindex.TenantRecord{
-		newHash: {
-			Namespace: apiKey.Namespace,
-			KeyID:     newKeyID,
-			ExpiresAt: newExpiresAt,
-		},
-	}
-	if currentRawKey != "" {
-		oldHash := keyutil.HashKey(currentRawKey)
-		entries[oldHash] = keyindex.TenantRecord{
-			Namespace: apiKey.Namespace,
-			KeyID:     currentKeyID,
-			ExpiresAt: &previousExpiresAt,
-		}
-	}
-	r.KeyIndex.SetNamespaceKeys(apiKey.Namespace, entries)
 
 	// Update status
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
@@ -465,14 +431,14 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 			KeyID: newKeyID,
 		}
 		if newExpiresAt != nil {
-			obj.Status.Current.ExpiresAt = metav1.NewTime(*newExpiresAt)
+			obj.Status.Current.ExpiresAt = &metav1.Time{Time: *newExpiresAt}
 		}
 		obj.Status.Phase = v1alpha1.PhaseActive
 		obj.Status.LastSyncedAt = &metaNow
 		obj.Status.LastRotatedAt = &rotatedAt
 		obj.Status.Previous = &v1alpha1.KeyStatus{
 			KeyID:     currentKeyID,
-			ExpiresAt: metav1.NewTime(previousExpiresAt),
+			ExpiresAt: &metav1.Time{Time: previousExpiresAt},
 		}
 		meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
@@ -482,12 +448,6 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 			LastTransitionTime: metav1.Now(),
 		})
 	}); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Clear rotation schedule
-	apiKey.Spec.Rotation.RotateAt = nil
-	if err := r.Update(ctx, apiKey); err != nil {
 		return ctrl.Result{}, err
 	}
 

@@ -102,7 +102,7 @@ all: generate fmt vet build ## Run generate, fmt, vet, and build.
 
 .PHONY: build
 build: ## Build manager binary.
-	go build -ldflags="-s -w" -o bin/llm-gateway-auth ./cmd/
+	go build -ldflags="-s -w" -o bin/apikey-operator ./cmd/apikey-operator/
 
 .PHONY: tidy
 tidy: ## Run go mod tidy.

@@ -70,7 +70,7 @@ type KeyStatus struct {
 	KeyID string `json:"keyID"`
 
 	// ExpiresAt is when the key stops being valid (rotation time + gracePeriod).
-	ExpiresAt metav1.Time `json:"expiresAt"`
+	ExpiresAt *metav1.Time `json:"expiresAt"`
 }
 
 // APIKeyStatus defines the observed state of APIKey.
