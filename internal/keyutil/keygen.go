@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"regexp"
 )
 
 const (
@@ -16,8 +15,6 @@ const (
 	PreviousSecretKey = "previousApiKey"
 	SingletonName     = "default"
 )
-
-var keyPattern = regexp.MustCompile(`^sk-[A-Za-z0-9_-]{30,}$`)
 
 // GenerateResult holds the output of key generation.
 type GenerateResult struct {
