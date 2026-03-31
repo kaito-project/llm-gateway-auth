@@ -163,7 +163,6 @@ spec:
                     description: KeyID of the key.
                     type: string
                 required:
-                - expiresAt
                 - keyID
                 type: object
               lastRotatedAt:
@@ -197,7 +196,6 @@ spec:
                     description: KeyID of the key.
                     type: string
                 required:
-                - expiresAt
                 - keyID
                 type: object
               secretRef:

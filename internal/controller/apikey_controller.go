@@ -329,7 +329,7 @@ func (r *APIKeyReconciler) isRotationDue(apiKey *v1alpha1.APIKey) bool {
 // cleanupExpiredPreviousKey removes the previous key from the Secret
 // if its grace period has expired.
 func (r *APIKeyReconciler) cleanupExpiredPreviousKey(ctx context.Context, apiKey *v1alpha1.APIKey, secret *corev1.Secret) error {
-	if apiKey.Status.Previous == nil || !apiKey.Status.Previous.ExpiresAt.Time.Before(time.Now()) {
+	if apiKey.Status.Previous == nil || apiKey.Status.Previous.ExpiresAt == nil || !apiKey.Status.Previous.ExpiresAt.Time.Before(time.Now()) {
 		return nil
 	}
 	logger := log.FromContext(ctx)
@@ -378,7 +378,7 @@ func (r *APIKeyReconciler) computeRequeueAfter(apiKey *v1alpha1.APIKey, expiresA
 			earliest = d
 		}
 	}
-	if apiKey.Status.Previous != nil {
+	if apiKey.Status.Previous != nil && apiKey.Status.Previous.ExpiresAt != nil {
 		if d := time.Until(apiKey.Status.Previous.ExpiresAt.Time); d > 0 && (earliest == 0 || d < earliest) {
 			earliest = d
 		}
