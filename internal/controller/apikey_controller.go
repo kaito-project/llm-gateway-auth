@@ -427,7 +427,11 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 		if len(s.Data) == 0 {
 			return fmt.Errorf("secret %s/%s data is empty, cannot rotate", s.Namespace, s.Name)
 		}
-		s.Data[keyutil.PreviousSecretKey] = s.Data[keyutil.SecretKey]
+		currentKey, ok := s.Data[keyutil.SecretKey]
+		if !ok || len(currentKey) == 0 {
+			return fmt.Errorf("secret %s/%s current API key missing or empty, cannot rotate", s.Namespace, s.Name)
+		}
+		s.Data[keyutil.PreviousSecretKey] = currentKey
 		s.Data[keyutil.SecretKey] = []byte(result.RawKey)
 		return nil
 	}); err != nil {
