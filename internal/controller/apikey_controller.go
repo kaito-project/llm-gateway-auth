@@ -40,12 +40,6 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Singleton enforcement (TODO: move to webhook later)
-	if req.Name != keyutil.SingletonName {
-		return ctrl.Result{}, r.markNotReady(ctx, &apiKey, "InvalidName",
-			"APIKey name must be 'default' (singleton per namespace)")
-	}
-
 	if !apiKey.DeletionTimestamp.IsZero() {
 		return r.handleDeletion(ctx, &apiKey)
 	}
