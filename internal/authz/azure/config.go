@@ -1,4 +1,4 @@
-package authz
+package azure
 
 // Config holds authorization-related configuration for the ext_authz server.
 type Config struct {

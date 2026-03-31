@@ -1,6 +1,7 @@
-// Package authz implements the Envoy ext_authz gRPC service that delegates
-// authorization to the Kubernetes API server via SubjectAccessReview.
-package authz
+// Package azure implements the Envoy ext_authz gRPC service that delegates
+// authorization to the Kubernetes API server via SubjectAccessReview,
+// using Azure AD / Entra ID JWT claims for identity.
+package azure
 
 import (
 	"errors"
