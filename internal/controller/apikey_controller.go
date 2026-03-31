@@ -402,7 +402,7 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 	}
 
 	// Compute grace period
-	gracePeriod := 24 * time.Hour
+	gracePeriod := v1alpha1.DefaultGracePeriod
 	if apiKey.Spec.Rotation != nil && apiKey.Spec.Rotation.GracePeriod != "" {
 		// TODO: move to webhook validation later
 		parsed, err := time.ParseDuration(apiKey.Spec.Rotation.GracePeriod)

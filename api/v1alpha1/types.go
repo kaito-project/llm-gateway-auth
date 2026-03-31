@@ -1,12 +1,14 @@
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
 	// DefaultGracePeriod is the default duration for which the previous key remains valid after rotation.
-	DefaultGracePeriod = "24h"
+	DefaultGracePeriod = 24 * time.Hour
 )
 
 // APIKeySpec defines the desired state of APIKey.
