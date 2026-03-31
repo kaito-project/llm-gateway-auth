@@ -23,7 +23,7 @@ type Index struct {
 }
 
 var indexSize = promauto.NewGauge(prometheus.GaugeOpts{
-	Name: "llm_authz_index_size",
+	Name: "apikey_authz_index_size",
 	Help: "Number of entries in the in-memory key index",
 })
 

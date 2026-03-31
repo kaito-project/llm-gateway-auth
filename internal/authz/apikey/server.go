@@ -20,12 +20,12 @@ import (
 
 var (
 	checkTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "llm_authz_check_total",
+		Name: "apikey_authz_check_total",
 		Help: "Auth check result distribution",
 	}, []string{"result"})
 
 	checkDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "llm_authz_check_duration_seconds",
+		Name:    "apikey_authz_check_duration_seconds",
 		Help:    "Check RPC latency",
 		Buckets: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1},
 	}, []string{"result"})
