@@ -115,6 +115,23 @@ func (r *APIKeyReconciler) updateStatusWithRetry(ctx context.Context, apiKey *v1
 	})
 }
 
+// updateSecretWithRetry re-fetches the Secret on conflict, verifies ownership,
+// and applies the mutate function before each update attempt.
+func (r *APIKeyReconciler) updateSecretWithRetry(ctx context.Context, secret *corev1.Secret, apiKey *v1alpha1.APIKey, mutate func(*corev1.Secret) error) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: secret.Namespace, Name: secret.Name}, secret); err != nil {
+			return err
+		}
+		if !metav1.IsControlledBy(secret, apiKey) {
+			return fmt.Errorf("secret %s/%s is not owned by APIKey %s", secret.Namespace, secret.Name, apiKey.Name)
+		}
+		if err := mutate(secret); err != nil {
+			return err
+		}
+		return r.Update(ctx, secret)
+	})
+}
+
 // markNotReady sets the Ready condition to False and Phase to Pending.
 func (r *APIKeyReconciler) markNotReady(ctx context.Context, apiKey *v1alpha1.APIKey, reason, message string) error {
 	return r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
@@ -235,10 +252,12 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 			return ctrl.Result{}, r.markNotReady(ctx, apiKey, "SecretConflict",
 				fmt.Sprintf("Secret %q already exists but is not owned by this APIKey", keyutil.SecretName))
 		}
-		existing.Data = map[string][]byte{
-			keyutil.SecretKey: []byte(result.RawKey),
-		}
-		if err := r.Update(ctx, existing); err != nil {
+		if err := r.updateSecretWithRetry(ctx, existing, apiKey, func(s *corev1.Secret) error {
+			s.Data = map[string][]byte{
+				keyutil.SecretKey: []byte(result.RawKey),
+			}
+			return nil
+		}); err != nil {
 			return ctrl.Result{}, err
 		}
 		secret = existing
@@ -315,8 +334,10 @@ func (r *APIKeyReconciler) cleanupExpiredPreviousKey(ctx context.Context, apiKey
 	}
 	logger := log.FromContext(ctx)
 	logger.Info("Previous key grace period expired, removing", "namespace", apiKey.Namespace, "previousKeyID", apiKey.Status.Previous.KeyID, "currentKeyID", currentKeyID(apiKey))
-	delete(secret.Data, keyutil.PreviousSecretKey)
-	if err := r.Update(ctx, secret); err != nil {
+	if err := r.updateSecretWithRetry(ctx, secret, apiKey, func(s *corev1.Secret) error {
+		delete(s.Data, keyutil.PreviousSecretKey)
+		return nil
+	}); err != nil {
 		return err
 	}
 	return r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
@@ -402,9 +423,14 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 	}
 
 	// Update Secret: move current key to previous, set new as current
-	secret.Data[keyutil.PreviousSecretKey] = secret.Data[keyutil.SecretKey]
-	secret.Data[keyutil.SecretKey] = []byte(result.RawKey)
-	if err := r.Update(ctx, secret); err != nil {
+	if err := r.updateSecretWithRetry(ctx, secret, apiKey, func(s *corev1.Secret) error {
+		if len(s.Data) == 0 {
+			return fmt.Errorf("secret %s/%s data is empty, cannot rotate", s.Namespace, s.Name)
+		}
+		s.Data[keyutil.PreviousSecretKey] = s.Data[keyutil.SecretKey]
+		s.Data[keyutil.SecretKey] = []byte(result.RawKey)
+		return nil
+	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update secret for rotation: %w", err)
 	}
 

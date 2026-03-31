@@ -236,10 +236,14 @@ func TestReconcile_SecretDeletedRegenerates(t *testing.T) {
 func TestReconcile_Rotation(t *testing.T) {
 	s := setupScheme()
 	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
+	apiKeyUID := types.UID("rotation-uid")
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "llm-api-key",
 			Namespace: "team-alpha",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(&metav1.ObjectMeta{Name: "default", UID: apiKeyUID}, v1alpha1.GroupVersion.WithKind("APIKey")),
+			},
 		},
 		Data: map[string][]byte{
 			"apiKey": []byte(rawKey),
@@ -249,6 +253,7 @@ func TestReconcile_Rotation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "default",
 			Namespace: "team-alpha",
+			UID:       apiKeyUID,
 		},
 		Spec: v1alpha1.APIKeySpec{
 			Prefix: "sk-",
@@ -325,10 +330,14 @@ func TestReconcile_Rotation(t *testing.T) {
 func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
 	s := setupScheme()
 	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
+	apiKeyUID := types.UID("rotation-expires-uid")
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "llm-api-key",
 			Namespace: "team-alpha",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(&metav1.ObjectMeta{Name: "default", UID: apiKeyUID}, v1alpha1.GroupVersion.WithKind("APIKey")),
+			},
 		},
 		Data: map[string][]byte{
 			"apiKey": []byte(rawKey),
@@ -338,6 +347,7 @@ func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "default",
 			Namespace:         "team-alpha",
+			UID:               apiKeyUID,
 			CreationTimestamp: metav1.Now(),
 		},
 		Spec: v1alpha1.APIKeySpec{
@@ -385,10 +395,14 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 	s := setupScheme()
 	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
 	previousKey := "sk-llmgw-OldKeyOldKeyOldKeyOldKeyOldKeyABCD"
+	apiKeyUID := types.UID("grace-period-uid")
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "llm-api-key",
 			Namespace: "team-alpha",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(&metav1.ObjectMeta{Name: "default", UID: apiKeyUID}, v1alpha1.GroupVersion.WithKind("APIKey")),
+			},
 		},
 		Data: map[string][]byte{
 			"apiKey":         []byte(rawKey),
@@ -400,6 +414,7 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "default",
 			Namespace: "team-alpha",
+			UID:       apiKeyUID,
 		},
 		Spec: v1alpha1.APIKeySpec{
 			Prefix: "sk-",
