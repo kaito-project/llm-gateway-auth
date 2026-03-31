@@ -1,12 +1,14 @@
 package v1alpha1
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
 	// DefaultGracePeriod is the default duration for which the previous key remains valid after rotation.
-	DefaultGracePeriod = "24h"
+	DefaultGracePeriod = 24 * time.Hour
 )
 
 // APIKeySpec defines the desired state of APIKey.
@@ -70,7 +72,7 @@ type KeyStatus struct {
 	KeyID string `json:"keyID"`
 
 	// ExpiresAt is when the key stops being valid (rotation time + gracePeriod).
-	ExpiresAt metav1.Time `json:"expiresAt"`
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 }
 
 // APIKeyStatus defines the observed state of APIKey.
