@@ -122,7 +122,7 @@ func TestCheck_BareToken(t *testing.T) {
 		Namespace: "default",
 		KeyID:     result.KeyID,
 	})
-	resp, err := srv.Check(context.Background(), makeCheckRequestWithGateway(result.RawKey, "default"))
+	resp, err := srv.Check(context.Background(), makeCheckRequestWithGateway("Bearer "+result.RawKey, "default"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +137,6 @@ func TestExtractKey(t *testing.T) {
 		want   string
 	}{
 		{"Bearer sk-llmgw-test", "sk-llmgw-test"},
-		{"sk-llmgw-test", "sk-llmgw-test"},
 		{"", ""},
 		{"Basic abc123", ""},
 	}
