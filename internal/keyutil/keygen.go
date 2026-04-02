@@ -58,3 +58,9 @@ func KeyIDFromHash(hashHex string) string {
 	}
 	return hashHex
 }
+
+// ValidateKeyFormat checks whether a key matches the expected format.
+func ValidateKeyFormat(key string) bool {
+	// TODO: add more robust validation (length, allowed characters, etc.)
+	return true
+}

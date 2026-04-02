@@ -103,6 +103,7 @@ all: generate fmt vet build ## Run generate, fmt, vet, and build.
 .PHONY: build
 build: ## Build manager binary.
 	go build -ldflags="-s -w" -o bin/apikey-operator ./cmd/apikey-operator/
+	go build -ldflags="-s -w" -o bin/apikey-istio-authz-ext ./cmd/apikey-istio-authz-ext/
 
 .PHONY: tidy
 tidy: ## Run go mod tidy.
