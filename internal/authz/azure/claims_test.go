@@ -9,10 +9,14 @@ import (
 )
 
 // buildFilterMetadata is a test helper that constructs the filter metadata map
-// with claims under the jwt_authn key.
+// with claims nested under the "payload" key within the jwt_authn filter,
+// matching how Istio's RequestAuthentication populates filter metadata.
 func buildFilterMetadata(t *testing.T, claims map[string]interface{}) map[string]*structpb.Struct {
 	t.Helper()
-	s, err := structpb.NewStruct(claims)
+	wrapper := map[string]interface{}{
+		"payload": claims,
+	}
+	s, err := structpb.NewStruct(wrapper)
 	require.NoError(t, err, "failed to build struct")
 	return map[string]*structpb.Struct{
 		jwtAuthnFilterName: s,

@@ -33,7 +33,10 @@ func buildCheckRequest(t *testing.T, claims map[string]interface{}, host, method
 	}
 
 	if claims != nil {
-		s, err := structpb.NewStruct(claims)
+		wrapper := map[string]interface{}{
+			"payload": claims,
+		}
+		s, err := structpb.NewStruct(wrapper)
 		require.NoError(t, err, "failed to build struct")
 		req.Attributes.MetadataContext = &corev3.Metadata{
 			FilterMetadata: map[string]*structpb.Struct{

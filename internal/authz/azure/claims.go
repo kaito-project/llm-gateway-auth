@@ -42,16 +42,25 @@ type azureADClaims struct {
 // claimsFromFilterMetadata extracts Azure AD claims from the Envoy filter
 // metadata populated by Istio's RequestAuthentication (jwt_authn filter).
 //
-// The metadata is located at:
+// Istio configures the jwt_authn filter with payload_in_metadata="payload",
+// so claims are nested at:
 //
-//	attributes.metadata_context.filter_metadata["envoy.filters.http.jwt_authn"]
+//	attributes.metadata_context.filter_metadata["envoy.filters.http.jwt_authn"]["payload"]
 func claimsFromFilterMetadata(filterMetadata map[string]*structpb.Struct) (*azureADClaims, error) {
 	md, ok := filterMetadata[jwtAuthnFilterName]
 	if !ok || md == nil {
 		return nil, errNoFilterMetadata
 	}
 
+	// Istio nests validated JWT claims under a "payload" key within the
+	// jwt_authn filter metadata.
 	fields := md.GetFields()
+	if payload, ok := fields["payload"]; ok {
+		if payloadStruct := payload.GetStructValue(); payloadStruct != nil {
+			fields = payloadStruct.GetFields()
+		}
+	}
+
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("%w: metadata struct is empty", errNoFilterMetadata)
 	}
