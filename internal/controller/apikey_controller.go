@@ -74,7 +74,7 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 	if requeueNeeded {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 	}
 
 	if r.isRotationDue(&apiKey) {
@@ -254,7 +254,6 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
-		secret = existing
 	}
 
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
@@ -265,7 +264,7 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 		return ctrl.Result{}, err
 	}
 	logger.Info("Secret created for APIKey", "namespace", apiKey.Namespace, "keyID", result.KeyID)
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 }
 
 // fetchKeySecret retrieves the Secret referenced by the APIKey status.

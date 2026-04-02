@@ -9,11 +9,12 @@ import (
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"github.com/go-logr/logr"
-	"github.com/kaito-project/llm-gateway-auth/internal/authz"
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 	authorizationv1 "k8s.io/api/authorization/v1"
+
+	"github.com/kaito-project/llm-gateway-auth/internal/authz"
 )
 
 // AuthorizationServer implements envoy.service.auth.v3.Authorization.
