@@ -79,7 +79,7 @@ func TestReconcile_GeneratesSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
+	if result.RequeueAfter == 0 {
 		t.Error("expected requeue after Secret creation")
 	}
 
@@ -221,7 +221,7 @@ func TestReconcile_SecretDeletedRegenerates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !result.Requeue {
+	if result.RequeueAfter == 0 {
 		t.Error("expected requeue when Secret is missing")
 	}
 
