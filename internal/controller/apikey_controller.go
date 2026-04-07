@@ -48,11 +48,7 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	expiresAt, err := r.computeExpiresAt(&apiKey)
-	if err != nil {
-		return ctrl.Result{}, r.markNotReady(ctx, &apiKey, "InvalidExpiresIn",
-			fmt.Sprintf("Invalid expiresIn duration %q: %v", apiKey.Spec.ExpiresIn, err))
-	}
+	expiresAt := r.computeExpiresAt(&apiKey)
 
 	if expiresAt != nil && expiresAt.Before(time.Now()) {
 		return ctrl.Result{}, r.handleExpiry(ctx, &apiKey, expiresAt)
@@ -166,22 +162,18 @@ func (r *APIKeyReconciler) ensureFinalizer(ctx context.Context, apiKey *v1alpha1
 
 // computeExpiresAt calculates the key expiration time based on spec.expiresIn.
 // Uses last rotation time as base if available, otherwise creation time.
-// Returns (nil, nil) if no expiration is configured.
-func (r *APIKeyReconciler) computeExpiresAt(apiKey *v1alpha1.APIKey) (*time.Time, error) {
+// Returns nil if no expiration is configured.
+func (r *APIKeyReconciler) computeExpiresAt(apiKey *v1alpha1.APIKey) *time.Time {
 	if apiKey.Spec.ExpiresIn == "" {
-		return nil, nil
+		return nil
 	}
-	// TODO: move to webhook validation later
-	duration, err := time.ParseDuration(apiKey.Spec.ExpiresIn)
-	if err != nil {
-		return nil, err
-	}
+	duration, _ := time.ParseDuration(apiKey.Spec.ExpiresIn)
 	baseTime := apiKey.CreationTimestamp.Time
 	if apiKey.Status.LastRotatedAt != nil {
 		baseTime = apiKey.Status.LastRotatedAt.Time
 	}
 	t := baseTime.Add(duration)
-	return &t, nil
+	return &t
 }
 
 // handleExpiry marks the key as expired.
@@ -397,15 +389,7 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 	// Compute grace period
 	gracePeriod := v1alpha1.DefaultGracePeriod
 	if apiKey.Spec.Rotation != nil && apiKey.Spec.Rotation.GracePeriod != "" {
-		// TODO: move to webhook validation later
-		parsed, err := time.ParseDuration(apiKey.Spec.Rotation.GracePeriod)
-		if err != nil {
-			if err := r.markNotReady(ctx, apiKey, "InvalidGracePeriod",
-				fmt.Sprintf("Invalid gracePeriod %q: %v", apiKey.Spec.Rotation.GracePeriod, err)); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		}
+		parsed, _ := time.ParseDuration(apiKey.Spec.Rotation.GracePeriod)
 		gracePeriod = parsed
 	}
 
