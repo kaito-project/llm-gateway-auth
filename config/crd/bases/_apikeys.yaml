@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: apikeys.
+  name: apikeys.kaito.sh
 spec:
-  group: ""
+  group: "kaito.sh"
   names:
     kind: APIKey
     listKind: APIKeyList
@@ -27,7 +27,7 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: ""
+    name: "v1alpha1"
     schema:
       openAPIV3Schema:
         description: APIKey is the Schema for the apikeys API.

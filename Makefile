@@ -91,6 +91,10 @@ fmt: ## Run go fmt against code.
 test: ## Run unit tests.
 	go test ./... -coverprofile=cover.out -count=1
 
+.PHONY: e2e-test
+e2e-test: ## Run e2e tests against the kind cluster (requires: make kind-create).
+	USE_EXISTING_CLUSTER=true go test -tags e2e ./test/e2e/... -v -count=1
+
 ## --------------------------------------
 ## Build
 ## --------------------------------------

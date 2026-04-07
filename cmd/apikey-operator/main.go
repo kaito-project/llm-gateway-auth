@@ -11,9 +11,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 	"github.com/kaito-project/llm-gateway-auth/internal/controller"
+	"github.com/kaito-project/llm-gateway-auth/internal/webhook"
 )
 
 func main() {
@@ -57,6 +59,11 @@ func main() {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "APIKey")
 		os.Exit(1)
 	}
+
+	mgr.GetWebhookServer().Register(
+		"/validate-kaito-sh-v1alpha1-apikey",
+		admission.WithValidator[*v1alpha1.APIKey](scheme, &webhook.APIKeyValidator{}),
+	)
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
