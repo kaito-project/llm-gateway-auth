@@ -1,0 +1,64 @@
+Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
+
+== Components Deployed ==
+
+  apikey-operator:
+    Deployment: {{ include "llm-gateway-apikey.fullname" . }}-operator
+    Namespace:  {{ .Release.Namespace }}
+
+  apikey-istio-authz-ext:
+    Deployment: {{ include "llm-gateway-apikey.fullname" . }}-authz
+    Namespace:  {{ .Release.Namespace }}
+    gRPC:       {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
+
+{{- if .Values.istio.enabled }}
+
+== Istio Integration ==
+
+  AuthorizationPolicy deployed to: {{ .Values.istio.gatewayNamespace }}
+  Provider name:                   {{ .Values.istio.providerName }}
+  Strict mTLS:                     {{ .Values.istio.strictMTLS }}
+
+{{- if not .Values.istio.meshConfigConfigMap.create }}
+
+  IMPORTANT: You must register the ext_authz provider in your Istio MeshConfig.
+  Add the following stanza to your MeshConfig extensionProviders:
+
+    extensionProviders:
+      - name: {{ .Values.istio.providerName }}
+        envoyExtAuthzGrpc:
+          service: {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local
+          port: "{{ .Values.authz.grpcPort }}"
+
+  For vanilla Istio:
+    kubectl edit configmap istio -n istio-system
+    # Merge the stanza above under meshConfig.extensionProviders
+
+  For AKS managed Istio (ASM):
+    Add the stanza to the shared ConfigMap:
+    kubectl edit configmap istio-shared-configmap-<revision> -n aks-istio-system
+{{- end }}
+{{- end }}
+
+== Quick Start ==
+
+  1. Create an API key in any namespace:
+
+     kubectl create namespace team-alpha
+     kubectl apply -n team-alpha -f - <<EOF
+     apiVersion: kaito.sh/v1alpha1
+     kind: APIKey
+     metadata:
+       name: default
+     spec:
+       prefix: "sk-"
+       expiresIn: "720h"
+     EOF
+
+  2. Retrieve the generated key:
+
+     kubectl get secret llm-api-key -n team-alpha -o jsonpath='{.data.apiKey}' | base64 -d
+
+  3. Verify with kubectl:
+
+     kubectl get apikey -n team-alpha

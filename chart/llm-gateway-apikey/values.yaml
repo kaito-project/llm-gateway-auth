@@ -1,0 +1,125 @@
+# ── Global ────────────────────────────────────────────────────────────────────
+global:
+  # Default pull policy for all images; components can override.
+  imagePullPolicy: IfNotPresent
+  # Labels applied to every resource the chart creates.
+  commonLabels: {}
+
+# ── apikey-operator ───────────────────────────────────────────────────────────
+# Manages the APIKey CRD lifecycle (create, rotate, expire) and runs
+# the validating admission webhook.
+operator:
+  image:
+    repository: ""
+    tag: ""               # Defaults to .Chart.AppVersion when empty.
+    pullPolicy: ""        # Defaults to global.imagePullPolicy when empty.
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  serviceAccount:
+    create: true
+    name: ""              # Auto-derived: "<fullname>-operator"
+    annotations: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # ── Webhook ──
+  webhook:
+    enabled: true           # Set to false to skip webhook resources (kind/dev).
+
+  # ── Webhook TLS ──
+  # "cert-manager"       — chart creates Certificate + SelfSigned Issuer.
+  # "controller-runtime" — controller-runtime generates certs in-memory (no cert-manager).
+  webhookTLS:
+    mode: cert-manager
+    certManager:
+      issuerName: ""      # Empty = auto-create a SelfSigned Issuer.
+      duration: "8760h"
+      renewBefore: "360h"
+
+  # Ports (match cmd/apikey-operator flag defaults).
+  metricsPort: 8080
+  healthPort: 8081
+  webhookPort: 9443
+
+# ── apikey-istio-authz-ext ────────────────────────────────────────────────────
+# Watches managed Secrets (IndexSyncer) and serves the API-key ext_authz gRPC
+# endpoint consumed by Istio's ingress gateway.
+authz:
+  image:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+  replicaCount: 2         # >= 2 for high availability.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  serviceAccount:
+    create: true
+    name: ""              # Auto-derived: "<fullname>-authz"
+    annotations: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Ports (match cmd/apikey-istio-authz-ext flag defaults).
+  grpcPort: 9001
+  metricsPort: 8082
+  healthPort: 8083
+
+# ── Istio integration ─────────────────────────────────────────────────────────
+istio:
+  enabled: true
+
+  # Istio control plane revision label.
+  #   "default" — upstream / vanilla Istio (uses istio-injection=enabled).
+  #   "asm-1-28" — AKS managed add-on (uses istio.io/rev=asm-1-28).
+  revision: "default"
+
+  # REQUIRED when istio.enabled=true.
+  # Namespace where the ingress gateway pods run.
+  # The AuthorizationPolicy is deployed into this namespace.
+  gatewayNamespace: ""
+
+  # REQUIRED when istio.enabled=true.
+  # Label selector matching the ingress gateway pods.
+  # Example: { istio: ingressgateway }
+  gatewaySelector: {}
+
+  # Name registered in MeshConfig extensionProviders.
+  # Must match the name in your Istio MeshConfig.
+  providerName: "apikey-ext-authz"
+
+  # Enforce STRICT mTLS in the release namespace.
+  strictMTLS: true
+
+  # MeshConfig extensionProvider ConfigMap helper.
+  # create: false is the safe default. NOTES.txt will print the stanza
+  # to merge into your Istio MeshConfig manually.
+  #
+  # Only set create: true when you fully own the target ConfigMap
+  # (e.g., fresh vanilla Istio install with no other extensionProviders).
+  meshConfigConfigMap:
+    create: false
+    namespace: "istio-system"
+    name: "istio"
+
+  # Inject Istio sidecar into the operator pod.
+  # The authz pod always gets a sidecar (needed for mTLS).
+  injectOperatorSidecar: false
+
+# ── CRD ───────────────────────────────────────────────────────────────────────
+crds:
+  install: true

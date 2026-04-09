@@ -1,0 +1,11 @@
+{{- if and .Values.operator.webhook.enabled (eq .Values.operator.webhookTLS.mode "cert-manager") (not .Values.operator.webhookTLS.certManager.issuerName) }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-operator-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}

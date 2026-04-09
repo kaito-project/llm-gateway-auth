@@ -14,6 +14,7 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
 
+	"github.com/kaito-project/llm-gateway-auth/internal/authz"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
@@ -50,11 +51,18 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 	path := httpReq.GetPath()
 	sourceIP := req.GetAttributes().GetSource().GetAddress().GetSocketAddress().GetAddress()
 
-	// Extract gateway namespace from Envoy context_extensions (required)
+	// Resolve gateway namespace:
+	//   Priority 1: explicit context_extensions["gateway-namespace"] (backward compat / EnvoyFilter override)
+	//   Priority 2: first subdomain of the Host / :authority header (e.g. "team-alpha.gw.example.com" → "team-alpha")
+	//   Priority 3: deny — neither source provided a namespace
 	gatewayNamespace := req.GetAttributes().GetContextExtensions()["gateway-namespace"]
 	if gatewayNamespace == "" {
+		gatewayNamespace = authz.NamespaceFromHost(httpReq.GetHost())
+	}
+	if gatewayNamespace == "" {
 		s.recordDeny("deny_missing_gateway", start, "", "", sourceIP, path)
-		return denyResponse(codes.InvalidArgument, "missing gateway-namespace in context_extensions"), nil
+		return denyResponse(codes.InvalidArgument,
+			"cannot determine gateway namespace: set context_extensions[gateway-namespace] or use subdomain-based host"), nil
 	}
 
 	// 1. Extract Authorization header

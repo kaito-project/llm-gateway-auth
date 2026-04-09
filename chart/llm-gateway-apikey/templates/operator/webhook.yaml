@@ -1,0 +1,28 @@
+{{- if .Values.operator.webhook.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-apikey
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+  annotations:
+    {{- if eq .Values.operator.webhookTLS.mode "cert-manager" }}
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-cert
+    {{- end }}
+webhooks:
+  - name: vapikey.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /validate-kaito-sh-v1alpha1-apikey
+    failurePolicy: Fail
+    sideEffects: None
+    rules:
+      - apiGroups: ["kaito.sh"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["apikeys"]
+{{- end }}

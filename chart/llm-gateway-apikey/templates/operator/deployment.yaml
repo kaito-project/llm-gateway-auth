@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+    {{- include "llm-gateway-apikey.operator.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "llm-gateway-apikey.operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-gateway-apikey.operator.selectorLabels" . | nindent 8 }}
+        {{- if and .Values.istio.enabled .Values.istio.injectOperatorSidecar }}
+        {{- include "llm-gateway-apikey.istio.podLabels" .Values.istio | nindent 8 }}
+        {{- else }}
+        {{- include "llm-gateway-apikey.istio.podLabelsDisabled" .Values.istio | nindent 8 }}
+        {{- end }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.operator.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+        {{- with .Values.operator.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "llm-gateway-apikey.operator.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.operator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.operator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: operator
+          image: "{{ required "operator.image.repository is required" .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          args:
+            - --metrics-bind-address=:{{ .Values.operator.metricsPort }}
+            - --health-probe-bind-address=:{{ .Values.operator.healthPort }}
+            {{- if not .Values.operator.webhook.enabled }}
+            - --enable-webhook=false
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.operator.metricsPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.operator.healthPort }}
+              protocol: TCP
+            {{- if .Values.operator.webhook.enabled }}
+            - name: webhook
+              containerPort: {{ .Values.operator.webhookPort }}
+              protocol: TCP
+            {{- end }}
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          {{- if .Values.operator.webhook.enabled }}
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: {{ eq .Values.operator.webhookTLS.mode "cert-manager" }}
+          {{- end }}
+      {{- if .Values.operator.webhook.enabled }}
+      volumes:
+        - name: webhook-certs
+          {{- if eq .Values.operator.webhookTLS.mode "cert-manager" }}
+          secret:
+            secretName: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-tls
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- end }}

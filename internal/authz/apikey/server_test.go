@@ -19,10 +19,18 @@ func newTestServer() (*Server, *keyindex.Index) {
 }
 
 func makeCheckRequest(authHeader string) *authv3.CheckRequest {
-	return makeCheckRequestWithGateway(authHeader, "")
+	return makeCheckRequestFull(authHeader, "", "")
 }
 
 func makeCheckRequestWithGateway(authHeader, gatewayNamespace string) *authv3.CheckRequest {
+	return makeCheckRequestFull(authHeader, gatewayNamespace, "")
+}
+
+func makeCheckRequestWithHost(authHeader, host string) *authv3.CheckRequest {
+	return makeCheckRequestFull(authHeader, "", host)
+}
+
+func makeCheckRequestFull(authHeader, gatewayNamespace, host string) *authv3.CheckRequest {
 	req := &authv3.CheckRequest{
 		Attributes: &authv3.AttributeContext{
 			Request: &authv3.AttributeContext_Request{
@@ -30,6 +38,7 @@ func makeCheckRequestWithGateway(authHeader, gatewayNamespace string) *authv3.Ch
 					Headers: map[string]string{
 						"authorization": authHeader,
 					},
+					Host: host,
 					Path: "/v1/chat/completions",
 				},
 			},
@@ -190,12 +199,103 @@ func TestCheck_MissingGatewayNamespace(t *testing.T) {
 		KeyID:     result.KeyID,
 	})
 
-	// No gateway-namespace in context_extensions → denied
+	// No gateway-namespace in context_extensions AND no Host header → denied
 	resp, err := srv.Check(context.Background(), makeCheckRequest("Bearer "+result.RawKey))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp.GetDeniedResponse() == nil {
 		t.Error("expected denied response when gateway-namespace is missing")
+	}
+}
+
+func TestCheck_NamespaceFromHostHeader(t *testing.T) {
+	srv, idx := newTestServer()
+	result, _ := keyutil.GenerateAPIKey("sk-")
+	idx.Upsert(result.Hash, keyindex.TenantRecord{
+		Namespace: "team-alpha",
+		KeyID:     result.KeyID,
+	})
+
+	// No context_extensions but Host header has subdomain → namespace from host
+	resp, err := srv.Check(context.Background(), makeCheckRequestWithHost("Bearer "+result.RawKey, "team-alpha.gw.example.com"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	okResp := resp.GetOkResponse()
+	if okResp == nil {
+		t.Fatal("expected OK response when namespace derived from Host header")
+	}
+
+	headers := make(map[string]string)
+	for _, h := range okResp.GetHeaders() {
+		headers[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+	}
+	if headers["x-tenant-namespace"] != "team-alpha" {
+		t.Errorf("expected x-tenant-namespace=team-alpha, got %s", headers["x-tenant-namespace"])
+	}
+}
+
+func TestCheck_HostHeaderWrongNamespace(t *testing.T) {
+	srv, idx := newTestServer()
+	result, _ := keyutil.GenerateAPIKey("sk-")
+	idx.Upsert(result.Hash, keyindex.TenantRecord{
+		Namespace: "team-alpha",
+		KeyID:     result.KeyID,
+	})
+
+	// Host resolves to team-beta but key belongs to team-alpha → denied
+	resp, err := srv.Check(context.Background(), makeCheckRequestWithHost("Bearer "+result.RawKey, "team-beta.gw.example.com"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetDeniedResponse() == nil {
+		t.Error("expected denied response when Host namespace does not match key namespace")
+	}
+}
+
+func TestCheck_HostHeaderNoSubdomain(t *testing.T) {
+	srv, idx := newTestServer()
+	result, _ := keyutil.GenerateAPIKey("sk-")
+	idx.Upsert(result.Hash, keyindex.TenantRecord{
+		Namespace: "default",
+		KeyID:     result.KeyID,
+	})
+
+	// Host is a bare hostname with no dots → NamespaceFromHost returns "" → denied
+	resp, err := srv.Check(context.Background(), makeCheckRequestWithHost("Bearer "+result.RawKey, "localhost"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.GetDeniedResponse() == nil {
+		t.Error("expected denied response when Host has no subdomain and no context_extensions")
+	}
+}
+
+func TestCheck_ContextExtensionsTakesPriority(t *testing.T) {
+	srv, idx := newTestServer()
+	result, _ := keyutil.GenerateAPIKey("sk-")
+	idx.Upsert(result.Hash, keyindex.TenantRecord{
+		Namespace: "team-alpha",
+		KeyID:     result.KeyID,
+	})
+
+	// Both context_extensions and Host set — context_extensions wins
+	req := makeCheckRequestFull("Bearer "+result.RawKey, "team-alpha", "team-beta.gw.example.com")
+	resp, err := srv.Check(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	okResp := resp.GetOkResponse()
+	if okResp == nil {
+		t.Fatal("expected OK response when context_extensions takes priority")
+	}
+
+	headers := make(map[string]string)
+	for _, h := range okResp.GetHeaders() {
+		headers[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+	}
+	if headers["x-tenant-namespace"] != "team-alpha" {
+		t.Errorf("expected x-tenant-namespace=team-alpha (from context_extensions), got %s", headers["x-tenant-namespace"])
 	}
 }

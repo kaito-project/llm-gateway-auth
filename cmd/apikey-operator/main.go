@@ -21,8 +21,10 @@ import (
 func main() {
 	var metricsAddr string
 	var probeAddr string
+	var enableWebhook bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
+	flag.BoolVar(&enableWebhook, "enable-webhook", true, "Enable the validating admission webhook server.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -60,10 +62,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr.GetWebhookServer().Register(
-		"/validate-kaito-sh-v1alpha1-apikey",
-		admission.WithValidator[*v1alpha1.APIKey](scheme, &webhook.APIKeyValidator{}),
-	)
+	if enableWebhook {
+		mgr.GetWebhookServer().Register(
+			"/validate-kaito-sh-v1alpha1-apikey",
+			admission.WithValidator[*v1alpha1.APIKey](scheme, &webhook.APIKeyValidator{}),
+		)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
