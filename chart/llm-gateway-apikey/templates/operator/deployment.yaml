@@ -53,6 +53,9 @@ spec:
           args:
             - --metrics-bind-address=:{{ .Values.operator.metricsPort }}
             - --health-probe-bind-address=:{{ .Values.operator.healthPort }}
+            {{- if .Values.operator.leaderElection.enabled }}
+            - --leader-elect=true
+            {{- end }}
             {{- if not .Values.operator.webhook.enabled }}
             - --enable-webhook=false
             {{- end }}
@@ -91,15 +94,11 @@ spec:
           volumeMounts:
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
-              readOnly: {{ eq .Values.operator.webhookTLS.mode "cert-manager" }}
+              readOnly: true
           {{- end }}
       {{- if .Values.operator.webhook.enabled }}
       volumes:
         - name: webhook-certs
-          {{- if eq .Values.operator.webhookTLS.mode "cert-manager" }}
           secret:
             secretName: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-tls
-          {{- else }}
-          emptyDir: {}
-          {{- end }}
       {{- end }}

@@ -15,7 +15,10 @@ rules:
   - apiGroups: ["kaito.sh"]
     resources: ["apikeys/finalizers"]
     verbs: ["update"]
-  # Secrets — operator creates/reads/updates/deletes managed Secrets across all namespaces
+  # Secrets — operator creates/reads/updates/deletes managed Secrets across all
+  # namespaces. Cluster-wide access is required because APIKey CRs are created in
+  # arbitrary user namespaces and the operator must manage Secrets alongside them.
+  # The operator only touches Secrets with an ownerReference pointing to an APIKey.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -23,3 +26,7 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # Leader election — coordination lease for HA deployments
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

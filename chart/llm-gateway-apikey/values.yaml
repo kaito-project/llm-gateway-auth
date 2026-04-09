@@ -13,7 +13,7 @@ operator:
     repository: ""
     tag: ""               # Defaults to .Chart.AppVersion when empty.
     pullPolicy: ""        # Defaults to global.imagePullPolicy when empty.
-  replicaCount: 1
+  replicaCount: 2
   resources:
     requests:
       cpu: 50m
@@ -30,13 +30,17 @@ operator:
   tolerations: []
   affinity: {}
 
+  # ── Leader Election ──
+  leaderElection:
+    enabled: true           # Ensures only one active operator replica reconciles.
+
   # ── Webhook ──
   webhook:
     enabled: true           # Set to false to skip webhook resources (kind/dev).
 
   # ── Webhook TLS ──
-  # "cert-manager"       — chart creates Certificate + SelfSigned Issuer.
-  # "controller-runtime" — controller-runtime generates certs in-memory (no cert-manager).
+  # cert-manager is required when the webhook is enabled.
+  # The chart creates a Certificate + SelfSigned Issuer (or uses your existing issuer).
   webhookTLS:
     mode: cert-manager
     certManager:

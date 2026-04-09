@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── Stage 1: Build ────────────────────────────────────────────────
-FROM golang:1.25.0 AS builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
 WORKDIR /workspace
 
 # Cache module downloads separately from source.
@@ -15,8 +15,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
       ./cmd/apikey-istio-authz-ext/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM mcr.microsoft.com/azurelinux/distroless/minimal:3.0
 COPY --from=builder /out/apikey-istio-authz-ext /apikey-istio-authz-ext
-USER nonroot:nonroot
+USER 65532:65532
 EXPOSE 8082 8083 9001
 ENTRYPOINT ["/apikey-istio-authz-ext"]

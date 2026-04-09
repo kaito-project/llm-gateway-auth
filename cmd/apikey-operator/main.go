@@ -22,9 +22,12 @@ func main() {
 	var metricsAddr string
 	var probeAddr string
 	var enableWebhook bool
+	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
 	flag.BoolVar(&enableWebhook, "enable-webhook", true, "Enable the validating admission webhook server.")
+	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+		"Enable leader election for controller manager. Ensures only one active controller at a time.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -49,6 +52,8 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "apikey-operator.kaito.sh",
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")

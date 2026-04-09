@@ -13,13 +13,15 @@ func TestGenerateAPIKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(result.RawKey, "sk-"), "expected key to start with sk-, got %s", result.RawKey)
 	assert.Equal(t, 8, len(result.KeyID), "expected keyID length 8")
-	assert.Equal(t, 64, len(result.Hash), "expected hash length 64")
-	assert.Equal(t, result.Hash[:8], result.KeyID, "expected keyID to be prefix of hash")
+	assert.Len(t, result.Hash, 64, "expected hash length 64")
+	assert.True(t, strings.HasPrefix(result.Hash, result.KeyID), "expected hash to start with keyID")
 }
 
 func TestGenerateAPIKeyUniqueness(t *testing.T) {
-	r1, _ := GenerateAPIKey("sk-")
-	r2, _ := GenerateAPIKey("sk-")
+	r1, err := GenerateAPIKey("sk-")
+	require.NoError(t, err)
+	r2, err := GenerateAPIKey("sk-")
+	require.NoError(t, err)
 	assert.NotEqual(t, r1.RawKey, r2.RawKey, "expected different keys")
 	assert.NotEqual(t, r1.Hash, r2.Hash, "expected different hashes")
 }

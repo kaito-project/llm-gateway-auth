@@ -139,7 +139,7 @@ image-build-operator:
 image-build-authz:
 	$(CONTAINER_RUNTIME) build -f $(AUTHZ_DOCKERFILE) -t $(AUTHZ_IMG) .
 
-## image-build-all: Build all three images (azure + operator + authz)
+## image-build-all: Build all three images (base + operator + authz)
 image-build-all: image-build image-build-operator image-build-authz
 
 ## image-push: Push the container image

@@ -14,7 +14,7 @@ import (
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
-// +kubebuilder:webhook:path=/validate-kaito-sh-v1alpha1-apikey,mutating=false,failurePolicy=fail,sideEffects=None,groups=kaito.sh,resources=apikeys,verbs=create;update,versions=v1alpha1,name=vapikey.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-kaito-sh-v1alpha1-apikey,mutating=false,failurePolicy=fail,sideEffects=None,groups=kaito.sh,resources=apikeys,verbs=create;update,versions=v1alpha1,name=vapikey.kaito.sh,admissionReviewVersions=v1
 
 // APIKeyValidator implements admission.Validator for APIKey resources.
 type APIKeyValidator struct{}
