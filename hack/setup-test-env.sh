@@ -20,7 +20,7 @@
 #   ISTIOCTL_INSTALL_DIR  where to install binaries (default: ~/.local/bin)
 #   CONTAINER_RUNTIME   "docker" or "podman" (auto-detected if unset)
 #   OPERATOR_IMG        operator image name (default: apikey-operator:latest)
-#   AUTHZ_IMG           authz image name (default: apikey-istio-authz-ext:latest)
+#   AUTHZ_IMG           authz image name (default: apikey-authz:latest)
 #   RELEASE_NAME        helm release name (default: llm-gateway-apikey)
 #   CHART_DIR           helm chart path (default: chart/llm-gateway-apikey)
 
@@ -59,7 +59,7 @@ ISTIOCTL_INSTALL_DIR="${ISTIOCTL_INSTALL_DIR:-${HOME}/.local/bin}"
 
 # Image and Helm configuration.
 OPERATOR_IMG="${OPERATOR_IMG:-apikey-operator:latest}"
-AUTHZ_IMG="${AUTHZ_IMG:-apikey-istio-authz-ext:latest}"
+AUTHZ_IMG="${AUTHZ_IMG:-apikey-authz:latest}"
 RELEASE_NAME="${RELEASE_NAME:-llm-gateway-apikey}"
 CHART_DIR="${CHART_DIR:-${REPO_ROOT}/chart/llm-gateway-apikey}"
 
@@ -380,7 +380,7 @@ build_and_load_images() {
 
   log "Building authz image: ${AUTHZ_IMG}..."
   ${CONTAINER_RUNTIME} build \
-    -f "${REPO_ROOT}/Dockerfile.apikey-istio-authz-ext" \
+    -f "${REPO_ROOT}/Dockerfile.apikey-authz" \
     -t "${AUTHZ_IMG}" \
     "${REPO_ROOT}"
   ok "Authz image built: ${AUTHZ_IMG}"
@@ -533,7 +533,7 @@ run_smoke_tests() {
   log "Checking authz pod status..."
   local authz_status
   authz_status="$(kubectl get pods -n "${NAMESPACE}" \
-    -l app.kubernetes.io/component=apikey-istio-authz-ext --no-headers \
+    -l app.kubernetes.io/component=apikey-authz --no-headers \
     | awk '{print $3}' | head -1)"
   if [[ "${authz_status}" != "Running" ]]; then
     die "Authz pod is not Running (status: ${authz_status}). Run: kubectl get pods -n ${NAMESPACE}"

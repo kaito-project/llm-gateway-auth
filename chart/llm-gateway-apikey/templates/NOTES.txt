@@ -6,7 +6,7 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
     Deployment: {{ include "llm-gateway-apikey.fullname" . }}-operator
     Namespace:  {{ .Release.Namespace }}
 
-  apikey-istio-authz-ext:
+  apikey-authz:
     Deployment: {{ include "llm-gateway-apikey.fullname" . }}-authz
     Namespace:  {{ .Release.Namespace }}
     gRPC:       {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
