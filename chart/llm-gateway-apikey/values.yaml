@@ -5,6 +5,11 @@ global:
   # Labels applied to every resource the chart creates.
   commonLabels: {}
 
+# Override the chart name used in resource names.
+# With this set, deployments are named "apikey-operator" and "apikey-authz"
+# regardless of the Helm release name.
+fullnameOverride: "apikey"
+
 # ── apikey-operator ───────────────────────────────────────────────────────────
 # Manages the APIKey CRD lifecycle (create, rotate, expire) and runs
 # the validating admission webhook.

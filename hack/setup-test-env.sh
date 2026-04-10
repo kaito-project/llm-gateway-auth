@@ -469,12 +469,12 @@ wait_for_deployments() {
   stage_begin "Waiting for operator and authz deployments"
 
   log "Waiting for operator deployment..."
-  kubectl rollout status deployment/"${RELEASE_NAME}-operator" \
+  kubectl rollout status deployment/apikey-operator \
     -n "${NAMESPACE}" --timeout=120s
   ok "Operator deployment is ready."
 
   log "Waiting for authz deployment..."
-  kubectl rollout status deployment/"${RELEASE_NAME}-authz" \
+  kubectl rollout status deployment/apikey-authz \
     -n "${NAMESPACE}" --timeout=120s
   ok "Authz deployment is ready."
 
