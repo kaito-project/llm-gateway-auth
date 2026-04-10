@@ -1,0 +1,81 @@
+# Publish Images to MCR
+#
+# Rebuilds both apikey-operator and apikey-authz on a trusted
+# 1ES self-hosted runner and pushes them to the MCR staging ACR.
+#
+# Triggered automatically by publish-gh-images.yaml after a successful
+# Trivy scan, or manually via workflow_dispatch.
+name: Publish MCR Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag for this release (e.g. v0.1.0)'
+        required: true
+  repository_dispatch:
+    types: [publish-llm-gateway-mcr-images]
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  GO_VERSION: '1.25'
+
+jobs:
+  # ── Job 1: Build and push to MCR staging ACR ──────────────────────────────
+  build-publish-mcr:
+    runs-on:
+      labels:
+        - self-hosted
+        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
+        - JobId=buildPublishMcr-${{ strategy.job-index }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    environment: publish-mcr
+    steps:
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Set image tag
+        run: |
+          ver=${{ github.event.client_payload.tag || github.event.inputs.tag }}
+          echo "IMG_TAG=${ver#"v"}" >> $GITHUB_ENV
+
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.client_payload.tag || github.event.inputs.tag }}
+
+      - name: Authenticate to ACR
+        run: |
+          az login --identity
+          az acr login -n ${{ secrets.MCR_REGISTRY }}
+
+      - name: Build and publish apikey-operator
+        run: |
+          make image-build-operator
+          docker push ${OPERATOR_IMG}
+        env:
+          OPERATOR_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-operator:${{ env.IMG_TAG }}
+
+      - name: Build and publish apikey-authz
+        run: |
+          make image-build-authz
+          docker push ${AUTHZ_IMG}
+        env:
+          AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ env.IMG_TAG }}
+
+  # ── Job 2: Dispatch Helm chart publishing (stub) ───────────────────────────
+  dispatch-helm-chart:
+    runs-on: ubuntu-latest
+    needs: [build-publish-mcr]
+    steps:
+      - name: Dispatch Helm chart publishing
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: publish-llm-gateway-helm-chart
+          client-payload: '{"tag": "${{ github.event.client_payload.tag || github.event.inputs.tag }}"}'
