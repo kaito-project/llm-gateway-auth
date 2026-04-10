@@ -1,9 +1,9 @@
 # Image URL to use all building/pushing image targets
 IMG ?= llm-gateway-auth:latest
 OPERATOR_IMG        ?= apikey-operator:latest
-AUTHZ_IMG           ?= apikey-istio-authz-ext:latest
+AUTHZ_IMG           ?= apikey-authz:latest
 OPERATOR_DOCKERFILE ?= Dockerfile.apikey-operator
-AUTHZ_DOCKERFILE    ?= Dockerfile.apikey-istio-authz-ext
+AUTHZ_DOCKERFILE    ?= Dockerfile.apikey-authz
 
 # Helm configuration
 CHART_DIR ?= chart/llm-gateway-apikey
@@ -112,7 +112,7 @@ all: generate fmt vet build ## Run generate, fmt, vet, and build.
 .PHONY: build
 build: ## Build manager binary.
 	go build -ldflags="-s -w" -o bin/apikey-operator ./cmd/apikey-operator/
-	go build -ldflags="-s -w" -o bin/apikey-istio-authz-ext ./cmd/apikey-istio-authz-ext/
+	go build -ldflags="-s -w" -o bin/apikey-authz ./cmd/apikey-authz/
 
 .PHONY: tidy
 tidy: ## Run go mod tidy.
@@ -136,7 +136,7 @@ image-build:
 image-build-operator:
 	$(CONTAINER_RUNTIME) build -f $(OPERATOR_DOCKERFILE) -t $(OPERATOR_IMG) .
 
-## image-build-authz: Build the apikey-istio-authz-ext image
+## image-build-authz: Build the apikey-authz image
 image-build-authz:
 	$(CONTAINER_RUNTIME) build -f $(AUTHZ_DOCKERFILE) -t $(AUTHZ_IMG) .
 
@@ -151,7 +151,7 @@ image-push:
 image-push-operator:
 	$(CONTAINER_RUNTIME) push $(OPERATOR_IMG)
 
-## image-push-authz: Push the apikey-istio-authz-ext image
+## image-push-authz: Push the apikey-authz image
 image-push-authz:
 	$(CONTAINER_RUNTIME) push $(AUTHZ_IMG)
 
@@ -252,7 +252,7 @@ else
 	kind load docker-image $(OPERATOR_IMG) --name $(KIND_CLUSTER_NAME)
 endif
 
-## kind-load-authz: Build and load apikey-istio-authz-ext image into kind
+## kind-load-authz: Build and load apikey-authz image into kind
 kind-load-authz: image-build-authz
 ifeq ($(CONTAINER_RUNTIME),podman)
 	podman save $(AUTHZ_IMG) -o /tmp/kind-authz.tar

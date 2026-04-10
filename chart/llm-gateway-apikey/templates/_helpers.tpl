@@ -54,7 +54,7 @@ Authz selector labels.
 */}}
 {{- define "llm-gateway-apikey.authz.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "llm-gateway-apikey.fullname" . }}-authz
-app.kubernetes.io/component: apikey-istio-authz-ext
+app.kubernetes.io/component: apikey-authz
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 

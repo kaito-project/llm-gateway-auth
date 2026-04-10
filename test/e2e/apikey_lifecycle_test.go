@@ -15,7 +15,7 @@
 //	  --namespace llm-gateway --create-namespace \
 //	  --set operator.image.repository=localhost/apikey-operator \
 //	  --set operator.image.tag=latest \
-//	  --set authz.image.repository=localhost/apikey-istio-authz-ext \
+//	  --set authz.image.repository=localhost/apikey-authz \
 //	  --set authz.image.tag=latest \
 //	  --set global.imagePullPolicy=Never \
 //	  --set istio.enabled=false \
