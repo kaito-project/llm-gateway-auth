@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -42,12 +43,11 @@ import (
 )
 
 var (
-	k8sClient    client.Client
-	directClient client.Client // non-cached, for reads immediately after writes
-	testEnv      *envtest.Environment
-	ctx          context.Context
-	cancel       context.CancelFunc
-	scheme       = runtime.NewScheme()
+	k8sClient client.Client
+	testEnv   *envtest.Environment
+	ctx       context.Context
+	cancel    context.CancelFunc
+	scheme    = runtime.NewScheme()
 )
 
 // kindHostIP returns an IP reachable from inside the kind control-plane container
@@ -147,12 +147,10 @@ func TestMain(m *testing.M) {
 	<-mgr.Elected()
 	time.Sleep(1 * time.Second) // give the HTTPS listener time to start
 
-	k8sClient = mgr.GetClient()
-
-	// Create a non-cached client for immediate reads after writes.
-	directClient, err = client.New(cfg, client.Options{Scheme: scheme})
+	// Single non-cached client — all reads and writes go directly to the API server.
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create direct client: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to create client: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -251,13 +249,19 @@ func TestUpdatePrefixImmutable(t *testing.T) {
 	}
 	require.NoError(t, k8sClient.Create(ctx, key))
 
-	// Re-fetch to get the resource version.
-	require.NoError(t, directClient.Get(ctx, client.ObjectKeyFromObject(key), key))
-
-	key.Spec.Prefix = "changed-"
-	err := k8sClient.Update(ctx, key)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "immutable")
+	// RetryOnConflict handles the case where the operator modifies the resource
+	// (adding finalizers, updating status) between our Get and Update calls.
+	// It transparently re-fetches and retries on conflict, surfacing only
+	// non-conflict errors (e.g. the webhook rejection we expect here).
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(key), key); err != nil {
+			return err
+		}
+		key.Spec.Prefix = "changed-"
+		return k8sClient.Update(ctx, key)
+	})
+	require.Error(t, updateErr)
+	require.Contains(t, updateErr.Error(), "immutable")
 }
 
 func TestUpdateExpiresInWithoutRotateAtRejected(t *testing.T) {
@@ -267,12 +271,16 @@ func TestUpdateExpiresInWithoutRotateAtRejected(t *testing.T) {
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-", ExpiresIn: "720h"},
 	}
 	require.NoError(t, k8sClient.Create(ctx, key))
-	require.NoError(t, directClient.Get(ctx, client.ObjectKeyFromObject(key), key))
 
-	key.Spec.ExpiresIn = "48h"
-	err := k8sClient.Update(ctx, key)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "immutable")
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(key), key); err != nil {
+			return err
+		}
+		key.Spec.ExpiresIn = "48h"
+		return k8sClient.Update(ctx, key)
+	})
+	require.Error(t, updateErr)
+	require.Contains(t, updateErr.Error(), "immutable")
 }
 
 func TestUpdateExpiresInWithRotateAtAllowed(t *testing.T) {
@@ -282,12 +290,17 @@ func TestUpdateExpiresInWithRotateAtAllowed(t *testing.T) {
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-", ExpiresIn: "720h"},
 	}
 	require.NoError(t, k8sClient.Create(ctx, key))
-	require.NoError(t, directClient.Get(ctx, client.ObjectKeyFromObject(key), key))
 
-	future := metav1.NewTime(time.Now().Add(24 * time.Hour))
-	key.Spec.ExpiresIn = "48h"
-	key.Spec.Rotation = &v1alpha1.RotationSpec{RotateAt: &future}
-	require.NoError(t, k8sClient.Update(ctx, key))
+	updateErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(key), key); err != nil {
+			return err
+		}
+		future := metav1.NewTime(time.Now().Add(24 * time.Hour))
+		key.Spec.ExpiresIn = "48h"
+		key.Spec.Rotation = &v1alpha1.RotationSpec{RotateAt: &future}
+		return k8sClient.Update(ctx, key)
+	})
+	require.NoError(t, updateErr)
 }
 
 func TestDeleteAlwaysAllowed(t *testing.T) {

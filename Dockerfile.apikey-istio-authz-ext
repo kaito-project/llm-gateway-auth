@@ -9,13 +9,15 @@ RUN go mod download
 
 # Copy source and build the apikey-istio-authz-ext binary.
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN GOOS=linux go build \
       -ldflags="-s -w" \
       -o /out/apikey-istio-authz-ext \
       ./cmd/apikey-istio-authz-ext/
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────
-FROM mcr.microsoft.com/azurelinux/distroless/minimal:3.0
+# Microsoft Go's crypto backend requires CGO, producing a dynamically-linked
+# binary. The "base" distroless image includes glibc (unlike "minimal").
+FROM mcr.microsoft.com/azurelinux/distroless/base:3.0
 COPY --from=builder /out/apikey-istio-authz-ext /apikey-istio-authz-ext
 USER 65532:65532
 EXPOSE 8082 8083 9001
