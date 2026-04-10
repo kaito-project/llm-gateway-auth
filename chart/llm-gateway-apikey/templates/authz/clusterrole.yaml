@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-authz
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+rules:
+  # Secrets — IndexSyncer watches Secrets owned by APIKey CRs across all namespaces
+  # (read-only). Cluster-wide access is required because APIKey CRs live in arbitrary
+  # user namespaces. The controller filters watches using an ownerReference predicate
+  # so only APIKey-managed Secrets are cached.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]

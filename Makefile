@@ -1,16 +1,20 @@
 # Image URL to use all building/pushing image targets
 IMG ?= llm-gateway-auth:latest
+OPERATOR_IMG        ?= apikey-operator:latest
+AUTHZ_IMG           ?= apikey-istio-authz-ext:latest
+OPERATOR_DOCKERFILE ?= Dockerfile.apikey-operator
+AUTHZ_DOCKERFILE    ?= Dockerfile.apikey-istio-authz-ext
 
 # Helm configuration
-CHART_DIR ?= chart/llm-gateway-auth
-RELEASE_NAME ?= llm-gateway-auth
+CHART_DIR ?= chart/llm-gateway-apikey
+RELEASE_NAME ?= llm-gateway-apikey
 NAMESPACE ?= llm-gateway
 
 # Container runtime: auto-detect docker or podman. Override with:
 #   make image-build CONTAINER_RUNTIME=podman
 CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 
-.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load
+.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-all image-push-operator image-push-authz kind-load-operator kind-load-authz kind-load-all
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -127,9 +131,28 @@ clean: ## Remove build artifacts.
 image-build:
 	$(CONTAINER_RUNTIME) build -t $(IMG) .
 
+## image-build-operator: Build the apikey-operator image
+image-build-operator:
+	$(CONTAINER_RUNTIME) build -f $(OPERATOR_DOCKERFILE) -t $(OPERATOR_IMG) .
+
+## image-build-authz: Build the apikey-istio-authz-ext image
+image-build-authz:
+	$(CONTAINER_RUNTIME) build -f $(AUTHZ_DOCKERFILE) -t $(AUTHZ_IMG) .
+
+## image-build-all: Build all three images (base + operator + authz)
+image-build-all: image-build image-build-operator image-build-authz
+
 ## image-push: Push the container image
 image-push:
 	$(CONTAINER_RUNTIME) push $(IMG)
+
+## image-push-operator: Push the apikey-operator image
+image-push-operator:
+	$(CONTAINER_RUNTIME) push $(OPERATOR_IMG)
+
+## image-push-authz: Push the apikey-istio-authz-ext image
+image-push-authz:
+	$(CONTAINER_RUNTIME) push $(AUTHZ_IMG)
 
 ## Backwards-compatible aliases
 docker-build: image-build
@@ -217,3 +240,26 @@ ifeq ($(CONTAINER_RUNTIME),podman)
 else
 	kind load docker-image $(IMG) --name $(KIND_CLUSTER_NAME)
 endif
+
+## kind-load-operator: Build and load apikey-operator image into kind
+kind-load-operator: image-build-operator
+ifeq ($(CONTAINER_RUNTIME),podman)
+	podman save $(OPERATOR_IMG) -o /tmp/kind-operator.tar
+	kind load image-archive /tmp/kind-operator.tar --name $(KIND_CLUSTER_NAME)
+	rm -f /tmp/kind-operator.tar
+else
+	kind load docker-image $(OPERATOR_IMG) --name $(KIND_CLUSTER_NAME)
+endif
+
+## kind-load-authz: Build and load apikey-istio-authz-ext image into kind
+kind-load-authz: image-build-authz
+ifeq ($(CONTAINER_RUNTIME),podman)
+	podman save $(AUTHZ_IMG) -o /tmp/kind-authz.tar
+	kind load image-archive /tmp/kind-authz.tar --name $(KIND_CLUSTER_NAME)
+	rm -f /tmp/kind-authz.tar
+else
+	kind load docker-image $(AUTHZ_IMG) --name $(KIND_CLUSTER_NAME)
+endif
+
+## kind-load-all: Build and load all images into kind
+kind-load-all: kind-load kind-load-operator kind-load-authz

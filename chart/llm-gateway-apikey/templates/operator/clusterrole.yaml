@@ -1,0 +1,32 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-operator
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+rules:
+  # APIKey lifecycle management
+  - apiGroups: ["kaito.sh"]
+    resources: ["apikeys"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kaito.sh"]
+    resources: ["apikeys/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["kaito.sh"]
+    resources: ["apikeys/finalizers"]
+    verbs: ["update"]
+  # Secrets — operator creates/reads/updates/deletes managed Secrets across all
+  # namespaces. Cluster-wide access is required because APIKey CRs are created in
+  # arbitrary user namespaces and the operator must manage Secrets alongside them.
+  # The operator only touches Secrets with an ownerReference pointing to an APIKey.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events — for audit logging of key creation, rotation, expiry
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Leader election — coordination lease for HA deployments
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

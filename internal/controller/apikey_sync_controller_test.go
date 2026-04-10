@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -22,22 +24,16 @@ func TestSyncReconcile_SecretNotFound(t *testing.T) {
 
 	// Pre-populate the index for the namespace
 	idx.Upsert("somehash", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "abcd1234"})
-	if idx.Size() != 1 {
-		t.Fatalf("expected index size 1, got %d", idx.Size())
-	}
+	require.Equal(t, 1, idx.Size())
 
 	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Index should be cleared for the namespace
-	if idx.Size() != 0 {
-		t.Errorf("expected index size 0 after Secret not found, got %d", idx.Size())
-	}
+	assert.Equal(t, 0, idx.Size(), "expected index size 0 after Secret not found")
 }
 
 func TestSyncReconcile_EmptyKey(t *testing.T) {
@@ -62,13 +58,8 @@ func TestSyncReconcile_EmptyKey(t *testing.T) {
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if idx.Size() != 0 {
-		t.Errorf("expected index size 0 for empty key, got %d", idx.Size())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 0, idx.Size(), "expected index size 0 for empty key")
 }
 
 func TestSyncReconcile_SyncsCurrentKey(t *testing.T) {
@@ -91,26 +82,16 @@ func TestSyncReconcile_SyncsCurrentKey(t *testing.T) {
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	expectedHash := keyutil.HashKey(rawKey)
 	expectedKeyID := keyutil.KeyIDFromHash(expectedHash)
 
 	rec, ok := idx.Lookup(expectedHash)
-	if !ok {
-		t.Fatal("expected key hash to be in index")
-	}
-	if rec.Namespace != "team-alpha" {
-		t.Errorf("expected namespace team-alpha, got %s", rec.Namespace)
-	}
-	if rec.KeyID != expectedKeyID {
-		t.Errorf("expected keyID %s, got %s", expectedKeyID, rec.KeyID)
-	}
-	if idx.Size() != 1 {
-		t.Errorf("expected index size 1, got %d", idx.Size())
-	}
+	require.True(t, ok, "expected key hash to be in index")
+	assert.Equal(t, "team-alpha", rec.Namespace)
+	assert.Equal(t, expectedKeyID, rec.KeyID)
+	assert.Equal(t, 1, idx.Size())
 }
 
 func TestSyncReconcile_SyncsCurrentAndPreviousKey(t *testing.T) {
@@ -135,23 +116,17 @@ func TestSyncReconcile_SyncsCurrentAndPreviousKey(t *testing.T) {
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Both keys should be in the index
 	currentHash := keyutil.HashKey(rawKey)
 	prevHash := keyutil.HashKey(prevKey)
 
-	if _, ok := idx.Lookup(currentHash); !ok {
-		t.Error("expected current key hash in index")
-	}
-	if _, ok := idx.Lookup(prevHash); !ok {
-		t.Error("expected previous key hash in index")
-	}
-	if idx.Size() != 2 {
-		t.Errorf("expected index size 2, got %d", idx.Size())
-	}
+	_, ok := idx.Lookup(currentHash)
+	assert.True(t, ok, "expected current key hash in index")
+	_, ok = idx.Lookup(prevHash)
+	assert.True(t, ok, "expected previous key hash in index")
+	assert.Equal(t, 2, idx.Size())
 }
 
 func TestSyncReconcile_ReplacesStaleEntries(t *testing.T) {
@@ -177,23 +152,17 @@ func TestSyncReconcile_ReplacesStaleEntries(t *testing.T) {
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Stale entry should be gone
-	if _, ok := idx.Lookup("stale-hash"); ok {
-		t.Error("expected stale hash to be removed from index")
-	}
+	_, ok := idx.Lookup("stale-hash")
+	assert.False(t, ok, "expected stale hash to be removed from index")
 
 	// New entry should be present
 	newHash := keyutil.HashKey(newKey)
-	if _, ok := idx.Lookup(newHash); !ok {
-		t.Error("expected new key hash in index")
-	}
-	if idx.Size() != 1 {
-		t.Errorf("expected index size 1, got %d", idx.Size())
-	}
+	_, ok = idx.Lookup(newHash)
+	assert.True(t, ok, "expected new key hash in index")
+	assert.Equal(t, 1, idx.Size())
 }
 
 func TestSyncReconcile_EmptyPreviousKeyIgnored(t *testing.T) {
@@ -217,18 +186,13 @@ func TestSyncReconcile_EmptyPreviousKeyIgnored(t *testing.T) {
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Only the current key should be indexed (empty previousApiKey is ignored)
-	if idx.Size() != 1 {
-		t.Errorf("expected index size 1, got %d", idx.Size())
-	}
+	assert.Equal(t, 1, idx.Size())
 	currentHash := keyutil.HashKey(rawKey)
-	if _, ok := idx.Lookup(currentHash); !ok {
-		t.Error("expected current key hash in index")
-	}
+	_, ok := idx.Lookup(currentHash)
+	assert.True(t, ok, "expected current key hash in index")
 }
 
 func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
@@ -260,40 +224,26 @@ func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Reconcile second namespace
 	_, err = syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-beta", Name: "llm-api-key"},
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err)
 
-	if idx.Size() != 2 {
-		t.Errorf("expected index size 2, got %d", idx.Size())
-	}
+	assert.Equal(t, 2, idx.Size())
 
 	alphaHash := keyutil.HashKey("sk-alpha-key")
 	betaHash := keyutil.HashKey("sk-beta-key")
 
 	rec, ok := idx.Lookup(alphaHash)
-	if !ok {
-		t.Fatal("expected alpha key in index")
-	}
-	if rec.Namespace != "team-alpha" {
-		t.Errorf("expected namespace team-alpha, got %s", rec.Namespace)
-	}
+	require.True(t, ok, "expected alpha key in index")
+	assert.Equal(t, "team-alpha", rec.Namespace)
 
 	rec, ok = idx.Lookup(betaHash)
-	if !ok {
-		t.Fatal("expected beta key in index")
-	}
-	if rec.Namespace != "team-beta" {
-		t.Errorf("expected namespace team-beta, got %s", rec.Namespace)
-	}
+	require.True(t, ok, "expected beta key in index")
+	assert.Equal(t, "team-beta", rec.Namespace)
 }
 
 func TestManagedSecretPredicate(t *testing.T) {
@@ -376,9 +326,7 @@ func TestManagedSecretPredicate(t *testing.T) {
 					break
 				}
 			}
-			if result != tt.expected {
-				t.Errorf("expected %v, got %v", tt.expected, result)
-			}
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }

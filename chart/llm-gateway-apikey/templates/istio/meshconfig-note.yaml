@@ -1,0 +1,23 @@
+{{- if and .Values.istio.enabled .Values.istio.meshConfigConfigMap.create }}
+# MeshConfig extensionProvider ConfigMap.
+#
+# WARNING: For vanilla Istio the "istio" ConfigMap in istio-system IS the live
+# MeshConfig. Setting create=true and name="istio" on a cluster with existing
+# extensionProviders will OVERWRITE them. Only use this on fresh installs where
+# you fully own the MeshConfig. Otherwise, merge the stanza shown in NOTES.txt
+# manually or via "kubectl edit".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.istio.meshConfigConfigMap.name }}
+  namespace: {{ .Values.istio.meshConfigConfigMap.namespace }}
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+data:
+  mesh: |
+    extensionProviders:
+      - name: {{ .Values.istio.providerName }}
+        envoyExtAuthzGrpc:
+          service: {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local
+          port: "{{ .Values.authz.grpcPort }}"
+{{- end }}
