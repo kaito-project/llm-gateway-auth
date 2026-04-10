@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -163,21 +164,8 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// createTestNamespace creates a unique namespace for a test and returns its name.
-// The namespace is cleaned up when the test finishes.
-func createTestNamespace(t *testing.T) string {
-	t.Helper()
-	name := fmt.Sprintf("e2e-webhook-%d", time.Now().UnixNano())
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	require.NoError(t, k8sClient.Create(ctx, ns))
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(context.Background(), ns)
-	})
-	return name
-}
-
 func TestCreateValidAPIKey(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
 		Spec: v1alpha1.APIKeySpec{
@@ -189,29 +177,29 @@ func TestCreateValidAPIKey(t *testing.T) {
 }
 
 func TestCreateInvalidName(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "not-default", Namespace: ns},
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-"},
 	}
 	err := k8sClient.Create(ctx, key)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "must be \"default\"")
+	assert.Contains(t, err.Error(), "must be \"default\"")
 }
 
 func TestCreateInvalidExpiresIn(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-", ExpiresIn: "abc"},
 	}
 	err := k8sClient.Create(ctx, key)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "must be a valid Go duration")
+	assert.Contains(t, err.Error(), "must be a valid Go duration")
 }
 
 func TestCreateInvalidGracePeriod(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
 		Spec: v1alpha1.APIKeySpec{
@@ -223,11 +211,11 @@ func TestCreateInvalidGracePeriod(t *testing.T) {
 	}
 	err := k8sClient.Create(ctx, key)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "must be a valid Go duration")
+	assert.Contains(t, err.Error(), "must be a valid Go duration")
 }
 
 func TestCreateRotateAtInPast(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	past := metav1.NewTime(time.Now().Add(-1 * time.Hour))
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
@@ -238,11 +226,11 @@ func TestCreateRotateAtInPast(t *testing.T) {
 	}
 	err := k8sClient.Create(ctx, key)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "must be a time in the future")
+	assert.Contains(t, err.Error(), "must be a time in the future")
 }
 
 func TestUpdatePrefixImmutable(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-"},
@@ -261,11 +249,11 @@ func TestUpdatePrefixImmutable(t *testing.T) {
 		return k8sClient.Update(ctx, key)
 	})
 	require.Error(t, updateErr)
-	require.Contains(t, updateErr.Error(), "immutable")
+	assert.Contains(t, updateErr.Error(), "immutable")
 }
 
 func TestUpdateExpiresInWithoutRotateAtRejected(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-", ExpiresIn: "720h"},
@@ -280,11 +268,11 @@ func TestUpdateExpiresInWithoutRotateAtRejected(t *testing.T) {
 		return k8sClient.Update(ctx, key)
 	})
 	require.Error(t, updateErr)
-	require.Contains(t, updateErr.Error(), "immutable")
+	assert.Contains(t, updateErr.Error(), "immutable")
 }
 
 func TestUpdateExpiresInWithRotateAtAllowed(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-", ExpiresIn: "720h"},
@@ -304,7 +292,7 @@ func TestUpdateExpiresInWithRotateAtAllowed(t *testing.T) {
 }
 
 func TestDeleteAlwaysAllowed(t *testing.T) {
-	ns := createTestNamespace(t)
+	ns := createNamespace(t, "e2e-webhook")
 	key := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
 		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-"},
