@@ -26,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -156,6 +157,15 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
+
+	// envtest does not delete the ValidatingWebhookConfiguration it installed
+	// when USE_EXISTING_CLUSTER=true. Remove it explicitly so the operator
+	// (still running in the cluster) can reconcile APIKey resources after
+	// the test binary exits.
+	vwc := &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: "validating-webhook-configuration"},
+	}
+	_ = k8sClient.Delete(context.Background(), vwc)
 
 	cancel()
 	if err := testEnv.Stop(); err != nil {
