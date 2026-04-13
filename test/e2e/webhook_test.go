@@ -17,6 +17,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"os/exec"
@@ -57,10 +58,13 @@ var (
 // via host.containers.internal. On Docker, the container gateway works.
 func kindHostIP(clusterName string) string {
 	containerName := clusterName + "-control-plane"
-	rt := "docker"
-	if _, err := exec.LookPath("podman"); err == nil {
-		rt = "podman"
-	}
+
+	// Determine which container runtime actually manages the kind cluster.
+	// GitHub Actions runners have both docker and podman installed, but the
+	// kind cluster is created with docker. Probe docker first; only fall
+	// back to podman if docker cannot see the container.
+	rt := detectRuntime(containerName)
+	fmt.Fprintf(os.Stderr, "kindHostIP: using container runtime %q for container %q\n", rt, containerName)
 
 	// Try resolving host.containers.internal from inside the container (Podman).
 	out, err := exec.Command(rt, "exec", containerName,
@@ -68,18 +72,67 @@ func kindHostIP(clusterName string) string {
 	if err == nil {
 		fields := strings.Fields(strings.TrimSpace(string(out)))
 		if len(fields) > 0 {
+			fmt.Fprintf(os.Stderr, "kindHostIP: resolved via host.containers.internal: %s\n", fields[0])
 			return fields[0]
 		}
 	}
 
-	// Fall back to the container gateway IP (Docker).
-	out, err = exec.Command(rt, "inspect", containerName,
-		"--format", "{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}").Output()
+	// Try the container gateway IP from docker/podman inspect.
+	cmd := exec.Command(rt, "inspect", containerName,
+		"--format", `{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}`)
+	out, err = cmd.Output()
 	if err == nil && strings.TrimSpace(string(out)) != "" {
-		return strings.TrimSpace(string(out))
+		ip := strings.TrimSpace(string(out))
+		fmt.Fprintf(os.Stderr, "kindHostIP: resolved via container inspect: %s\n", ip)
+		return ip
+	} else {
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = string(exitErr.Stderr)
+		}
+		fmt.Fprintf(os.Stderr, "kindHostIP: container inspect failed: out=%q err=%v stderr=%q\n", string(out), err, stderr)
 	}
 
+	// Fallback: query the "kind" Docker network directly for its gateway.
+	// kind creates a bridge network named "kind" whose gateway is the host IP
+	// reachable from inside any container on that network.
+	cmd = exec.Command(rt, "network", "inspect", "kind",
+		"--format", `{{(index .IPAM.Config 0).Gateway}}`)
+	out, err = cmd.Output()
+	if err == nil && strings.TrimSpace(string(out)) != "" {
+		ip := strings.TrimSpace(string(out))
+		fmt.Fprintf(os.Stderr, "kindHostIP: resolved via network inspect: %s\n", ip)
+		return ip
+	} else {
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = string(exitErr.Stderr)
+		}
+		fmt.Fprintf(os.Stderr, "kindHostIP: network inspect failed: out=%q err=%v stderr=%q\n", string(out), err, stderr)
+	}
+
+	fmt.Fprintf(os.Stderr, "kindHostIP: WARNING: could not determine host IP reachable from kind container %q\n", containerName)
 	return ""
+}
+
+// detectRuntime returns "docker" or "podman" depending on which runtime
+// actually manages the kind node container. GHA runners often have both
+// installed; we probe docker first because setup-test-env.sh defaults to it.
+func detectRuntime(containerName string) string {
+	// If docker can see the container, use docker.
+	if path, err := exec.LookPath("docker"); err == nil {
+		if exec.Command(path, "inspect", "--format", "{{.Id}}", containerName).Run() == nil {
+			return "docker"
+		}
+	}
+	// Otherwise try podman.
+	if path, err := exec.LookPath("podman"); err == nil {
+		if exec.Command(path, "inspect", "--format", "{{.Id}}", containerName).Run() == nil {
+			return "podman"
+		}
+	}
+	// Last resort — return docker and let the caller's error handling deal with it.
+	return "docker"
 }
 
 func TestMain(m *testing.M) {
@@ -104,6 +157,9 @@ func TestMain(m *testing.M) {
 	if gateway := kindHostIP(clusterName); gateway != "" {
 		webhookOpts.LocalServingHost = "0.0.0.0"
 		webhookOpts.LocalServingHostExternalName = gateway
+		fmt.Fprintf(os.Stderr, "TestMain: webhook will listen on 0.0.0.0 and advertise %s to the API server\n", gateway)
+	} else {
+		fmt.Fprintf(os.Stderr, "TestMain: WARNING: no host IP found; webhook will bind to 127.0.0.1 (may be unreachable from kind)\n")
 	}
 
 	testEnv = &envtest.Environment{
@@ -145,9 +201,25 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	// Wait for the webhook server to be ready.
-	<-mgr.Elected()
-	time.Sleep(1 * time.Second) // give the HTTPS listener time to start
+	// Wait for the webhook TLS listener to be ready. mgr.Elected() only
+	// signals that leader-election runnables have started — the webhook
+	// server may still be binding its port. Poll with a real TLS dial so
+	// we know the listener is accepting connections before running tests.
+	webhookAddr := fmt.Sprintf("127.0.0.1:%d", testEnv.WebhookInstallOptions.LocalServingPort)
+	tlsCfg := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only self-signed cert
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		conn, dialErr := tls.Dial("tcp", webhookAddr, tlsCfg)
+		if dialErr == nil {
+			conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintf(os.Stderr, "webhook server never became ready at %s: %v\n", webhookAddr, dialErr)
+			os.Exit(1)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// Single non-cached client — all reads and writes go directly to the API server.
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
