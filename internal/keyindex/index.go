@@ -52,6 +52,8 @@ func (idx *Index) SetNamespaceKeys(ns string, entries map[string]TenantRecord) {
 	// Remove old entries for this namespace
 	for _, h := range idx.byNamespace[ns] {
 		delete(idx.byHash, h)
+
+		
 	}
 
 	// Add new entries
