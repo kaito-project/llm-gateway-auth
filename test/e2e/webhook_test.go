@@ -69,17 +69,36 @@ func kindHostIP(clusterName string) string {
 	if err == nil {
 		fields := strings.Fields(strings.TrimSpace(string(out)))
 		if len(fields) > 0 {
+			fmt.Fprintf(os.Stderr, "kindHostIP: resolved via host.containers.internal: %s\n", fields[0])
 			return fields[0]
 		}
 	}
 
-	// Fall back to the container gateway IP (Docker).
+	// Try the container gateway IP from docker inspect.
 	out, err = exec.Command(rt, "inspect", containerName,
-		"--format", "{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}").Output()
+		"--format", `{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}`).Output()
 	if err == nil && strings.TrimSpace(string(out)) != "" {
-		return strings.TrimSpace(string(out))
+		ip := strings.TrimSpace(string(out))
+		fmt.Fprintf(os.Stderr, "kindHostIP: resolved via container inspect: %s\n", ip)
+		return ip
+	} else {
+		fmt.Fprintf(os.Stderr, "kindHostIP: container inspect failed: out=%q err=%v\n", string(out), err)
 	}
 
+	// Fallback: query the "kind" Docker network directly for its gateway.
+	// kind creates a bridge network named "kind" whose gateway is the host IP
+	// reachable from inside any container on that network.
+	out, err = exec.Command(rt, "network", "inspect", "kind",
+		"--format", `{{(index .IPAM.Config 0).Gateway}}`).Output()
+	if err == nil && strings.TrimSpace(string(out)) != "" {
+		ip := strings.TrimSpace(string(out))
+		fmt.Fprintf(os.Stderr, "kindHostIP: resolved via network inspect: %s\n", ip)
+		return ip
+	} else {
+		fmt.Fprintf(os.Stderr, "kindHostIP: network inspect failed: out=%q err=%v\n", string(out), err)
+	}
+
+	fmt.Fprintf(os.Stderr, "kindHostIP: WARNING: could not determine host IP reachable from kind container %q\n", containerName)
 	return ""
 }
 
@@ -105,6 +124,9 @@ func TestMain(m *testing.M) {
 	if gateway := kindHostIP(clusterName); gateway != "" {
 		webhookOpts.LocalServingHost = "0.0.0.0"
 		webhookOpts.LocalServingHostExternalName = gateway
+		fmt.Fprintf(os.Stderr, "TestMain: webhook will listen on 0.0.0.0 and advertise %s to the API server\n", gateway)
+	} else {
+		fmt.Fprintf(os.Stderr, "TestMain: WARNING: no host IP found; webhook will bind to 127.0.0.1 (may be unreachable from kind)\n")
 	}
 
 	testEnv = &envtest.Environment{
