@@ -5,6 +5,11 @@ global:
   # Labels applied to every resource the chart creates.
   commonLabels: {}
 
+# Override the chart name used in resource names.
+# With this set, deployments are named "apikey-operator" and "apikey-authz"
+# regardless of the Helm release name.
+fullnameOverride: "apikey"
+
 # ── apikey-operator ───────────────────────────────────────────────────────────
 # Manages the APIKey CRD lifecycle (create, rotate, expire) and runs
 # the validating admission webhook.
@@ -53,7 +58,7 @@ operator:
   healthPort: 8081
   webhookPort: 9443
 
-# ── apikey-istio-authz-ext ────────────────────────────────────────────────────
+# ── apikey-authz ────────────────────────────────────────────────────
 # Watches managed Secrets (IndexSyncer) and serves the API-key ext_authz gRPC
 # endpoint consumed by Istio's ingress gateway.
 authz:
@@ -78,7 +83,7 @@ authz:
   tolerations: []
   affinity: {}
 
-  # Ports (match cmd/apikey-istio-authz-ext flag defaults).
+  # Ports (match cmd/apikey-authz flag defaults).
   grpcPort: 9001
   metricsPort: 8082
   healthPort: 8083

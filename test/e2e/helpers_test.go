@@ -30,7 +30,7 @@ import (
 // Kubernetes coordinates for the authz service (Helm chart).
 const (
 	authzNamespace   = "llm-gateway"
-	authzServiceName = "llm-gateway-apikey-authz"
+	authzServiceName = "apikey-authz"
 	authzGRPCPort    = 9001
 )
 
@@ -201,7 +201,12 @@ func waitForAPIKey(
 }
 
 // waitForAPIKeyPhase polls until the APIKey reaches the expected phase.
-func waitForAPIKeyPhase(t *testing.T, namespace, name string, phase v1alpha1.APIKeyPhase, timeout time.Duration) *v1alpha1.APIKey {
+func waitForAPIKeyPhase(
+	t *testing.T,
+	namespace, name string,
+	phase v1alpha1.APIKeyPhase,
+	timeout time.Duration,
+) *v1alpha1.APIKey {
 	t.Helper()
 	return waitForAPIKey(t, namespace, name, timeout,
 		func(k *v1alpha1.APIKey) bool { return k.Status.Phase == phase },

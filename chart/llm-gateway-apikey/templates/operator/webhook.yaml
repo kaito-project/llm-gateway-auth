@@ -5,7 +5,7 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: {{ include "llm-gateway-apikey.fullname" . }}-apikey
+  name: {{ include "llm-gateway-apikey.fullname" . }}-validating-webhook
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
   annotations:
