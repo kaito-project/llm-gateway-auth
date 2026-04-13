@@ -17,6 +17,7 @@ package e2e
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"os/exec"
@@ -145,9 +146,25 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	// Wait for the webhook server to be ready.
-	<-mgr.Elected()
-	time.Sleep(1 * time.Second) // give the HTTPS listener time to start
+	// Wait for the webhook TLS listener to be ready. mgr.Elected() only
+	// signals that leader-election runnables have started — the webhook
+	// server may still be binding its port. Poll with a real TLS dial so
+	// we know the listener is accepting connections before running tests.
+	webhookAddr := fmt.Sprintf("127.0.0.1:%d", testEnv.WebhookInstallOptions.LocalServingPort)
+	tlsCfg := &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only self-signed cert
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		conn, dialErr := tls.Dial("tcp", webhookAddr, tlsCfg)
+		if dialErr == nil {
+			conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintf(os.Stderr, "webhook server never became ready at %s: %v\n", webhookAddr, dialErr)
+			os.Exit(1)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// Single non-cached client — all reads and writes go directly to the API server.
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
