@@ -58,10 +58,13 @@ var (
 // via host.containers.internal. On Docker, the container gateway works.
 func kindHostIP(clusterName string) string {
 	containerName := clusterName + "-control-plane"
-	rt := "docker"
-	if _, err := exec.LookPath("podman"); err == nil {
-		rt = "podman"
-	}
+
+	// Determine which container runtime actually manages the kind cluster.
+	// GitHub Actions runners have both docker and podman installed, but the
+	// kind cluster is created with docker. Probe docker first; only fall
+	// back to podman if docker cannot see the container.
+	rt := detectRuntime(containerName)
+	fmt.Fprintf(os.Stderr, "kindHostIP: using container runtime %q for container %q\n", rt, containerName)
 
 	// Try resolving host.containers.internal from inside the container (Podman).
 	out, err := exec.Command(rt, "exec", containerName,
@@ -74,32 +77,62 @@ func kindHostIP(clusterName string) string {
 		}
 	}
 
-	// Try the container gateway IP from docker inspect.
-	out, err = exec.Command(rt, "inspect", containerName,
-		"--format", `{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}`).Output()
+	// Try the container gateway IP from docker/podman inspect.
+	cmd := exec.Command(rt, "inspect", containerName,
+		"--format", `{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}`)
+	out, err = cmd.Output()
 	if err == nil && strings.TrimSpace(string(out)) != "" {
 		ip := strings.TrimSpace(string(out))
 		fmt.Fprintf(os.Stderr, "kindHostIP: resolved via container inspect: %s\n", ip)
 		return ip
 	} else {
-		fmt.Fprintf(os.Stderr, "kindHostIP: container inspect failed: out=%q err=%v\n", string(out), err)
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = string(exitErr.Stderr)
+		}
+		fmt.Fprintf(os.Stderr, "kindHostIP: container inspect failed: out=%q err=%v stderr=%q\n", string(out), err, stderr)
 	}
 
 	// Fallback: query the "kind" Docker network directly for its gateway.
 	// kind creates a bridge network named "kind" whose gateway is the host IP
 	// reachable from inside any container on that network.
-	out, err = exec.Command(rt, "network", "inspect", "kind",
-		"--format", `{{(index .IPAM.Config 0).Gateway}}`).Output()
+	cmd = exec.Command(rt, "network", "inspect", "kind",
+		"--format", `{{(index .IPAM.Config 0).Gateway}}`)
+	out, err = cmd.Output()
 	if err == nil && strings.TrimSpace(string(out)) != "" {
 		ip := strings.TrimSpace(string(out))
 		fmt.Fprintf(os.Stderr, "kindHostIP: resolved via network inspect: %s\n", ip)
 		return ip
 	} else {
-		fmt.Fprintf(os.Stderr, "kindHostIP: network inspect failed: out=%q err=%v\n", string(out), err)
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = string(exitErr.Stderr)
+		}
+		fmt.Fprintf(os.Stderr, "kindHostIP: network inspect failed: out=%q err=%v stderr=%q\n", string(out), err, stderr)
 	}
 
 	fmt.Fprintf(os.Stderr, "kindHostIP: WARNING: could not determine host IP reachable from kind container %q\n", containerName)
 	return ""
+}
+
+// detectRuntime returns "docker" or "podman" depending on which runtime
+// actually manages the kind node container. GHA runners often have both
+// installed; we probe docker first because setup-test-env.sh defaults to it.
+func detectRuntime(containerName string) string {
+	// If docker can see the container, use docker.
+	if path, err := exec.LookPath("docker"); err == nil {
+		if exec.Command(path, "inspect", "--format", "{{.Id}}", containerName).Run() == nil {
+			return "docker"
+		}
+	}
+	// Otherwise try podman.
+	if path, err := exec.LookPath("podman"); err == nil {
+		if exec.Command(path, "inspect", "--format", "{{.Id}}", containerName).Run() == nil {
+			return "podman"
+		}
+	}
+	// Last resort — return docker and let the caller's error handling deal with it.
+	return "docker"
 }
 
 func TestMain(m *testing.M) {
