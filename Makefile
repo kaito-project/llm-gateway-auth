@@ -13,6 +13,7 @@ NAMESPACE ?= llm-gateway
 # Container runtime: auto-detect docker or podman. Override with:
 #   make image-build CONTAINER_RUNTIME=podman
 CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
+USE_EXISTING_CLUSTER ?= true
 
 .PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-all image-push-operator image-push-authz kind-load-operator kind-load-authz kind-load-all
 
@@ -97,7 +98,7 @@ test: ## Run unit tests.
 
 .PHONY: e2e-test
 e2e-test: ## Run e2e tests against the kind cluster (requires: make kind-create).
-	USE_EXISTING_CLUSTER=true go test -tags e2e ./test/e2e/... -v -count=1
+	USE_EXISTING_CLUSTER=${USE_EXISTING_CLUSTER} go test -tags e2e ./test/e2e/... -v -count=1
 
 ## --------------------------------------
 ## Build

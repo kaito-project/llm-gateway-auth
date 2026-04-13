@@ -25,7 +25,7 @@ env:
 
 jobs:
   e2e:
-    name: kind + Istio E2E
+    name: kind E2E
     runs-on: ubuntu-latest
 
     steps:
@@ -46,34 +46,23 @@ jobs:
       - name: Add ~/.local/bin to PATH
         run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Set up kind cluster with Istio
+      - name: Set up kind cluster, build images, and deploy
         run: |
           chmod +x hack/setup-test-env.sh
-          hack/setup-test-env.sh
+          hack/setup-test-env.sh --skip-istio
         env:
           KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}
           NAMESPACE: ${{ env.NAMESPACE }}
+          # Istio is skipped because the e2e tests exercise the operator,
+          # webhook, and gRPC authz directly — no Istio-specific behaviour
+          # (AuthorizationPolicy, mTLS) is tested yet.  Skipping saves ~3
+          # minutes of CI time and removes the istioctl dependency.
 
-      # TODO: Uncomment when Dockerfile exists
-      # - name: Build container image
-      #   run: make image-build IMG=llm-authz:e2e-${{ github.sha }}
-
-      # TODO: Uncomment when Dockerfile exists
-      # - name: Load image into kind
-      #   run: make kind-load IMG=llm-authz:e2e-${{ github.sha }}
-
-      # TODO: Uncomment when Helm chart / manifests are ready
-      # - name: Deploy
-      #   run: make helm-install IMG=llm-authz:e2e-${{ github.sha }} NAMESPACE=${{ env.NAMESPACE }}
-
-      # TODO: Replace with real e2e tests
-      - name: Run e2e tests (placeholder)
-        run: |
-          echo "Cluster is ready. Running placeholder tests..."
-          kubectl get nodes
-          kubectl get pods -A
-          kubectl get pods -n istio-system
-          echo "Placeholder complete. Add real e2e tests here."
+      - name: Run e2e tests
+        run: make e2e-test
+        env:
+          USE_EXISTING_CLUSTER: "true"
+          KIND_CLUSTER_NAME: ${{ env.KIND_CLUSTER_NAME }}
 
       - name: Dump cluster state on failure
         if: failure()
@@ -84,8 +73,11 @@ jobs:
           echo "=== All Pods ==="
           kubectl get pods -A -o wide || true
           echo ""
-          echo "=== istiod logs ==="
-          kubectl logs -n istio-system -l app=istiod --tail=100 || true
+          echo "=== Operator logs ==="
+          kubectl logs -n ${{ env.NAMESPACE }} -l app.kubernetes.io/component=apikey-operator --tail=200 || true
+          echo ""
+          echo "=== Authz logs ==="
+          kubectl logs -n ${{ env.NAMESPACE }} -l app.kubernetes.io/component=apikey-istio-authz-ext --tail=200 || true
           echo ""
           echo "=== Events (warnings only) ==="
           kubectl get events -A --field-selector type=Warning --sort-by='.lastTimestamp' || true
