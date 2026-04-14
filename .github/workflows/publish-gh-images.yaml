@@ -1,6 +1,6 @@
 # Create, Scan and Publish Images to GHCR
 #
-# Builds both apikey-operator and apikey-authz images, pushes
+# Builds apikey-operator, apikey-authz, and azure-authz images, pushes
 # them to GHCR, runs Trivy vulnerability scans, and dispatches the MCR
 # publishing workflow on success.
 #
@@ -129,6 +129,13 @@ jobs:
         env:
           AUTHZ_IMG: ${{ steps.get-registry.outputs.registry_repository }}/apikey-authz:${{ env.IMG_TAG }}
 
+      - name: Build and push azure-authz
+        run: |
+          make image-build-azure-authz
+          docker push ${{ env.AZURE_AUTHZ_IMG }}
+        env:
+          AZURE_AUTHZ_IMG: ${{ steps.get-registry.outputs.registry_repository }}/azure-authz:${{ env.IMG_TAG }}
+
       - name: Scan apikey-operator
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
@@ -147,6 +154,20 @@ jobs:
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: ${{ steps.get-registry.outputs.registry_repository }}/apikey-authz:${{ env.IMG_TAG }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan azure-authz
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: ${{ steps.get-registry.outputs.registry_repository }}/azure-authz:${{ env.IMG_TAG }}
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true

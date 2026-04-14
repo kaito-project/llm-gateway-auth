@@ -1,6 +1,6 @@
 # Publish Images to MCR
 #
-# Rebuilds both apikey-operator and apikey-authz on a trusted
+# Rebuilds apikey-operator, apikey-authz, and azure-authz on a trusted
 # 1ES self-hosted runner and pushes them to the MCR staging ACR.
 #
 # Triggered automatically by publish-gh-images.yaml after a successful
@@ -67,6 +67,13 @@ jobs:
           docker push ${AUTHZ_IMG}
         env:
           AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ env.IMG_TAG }}
+
+      - name: Build and publish azure-authz
+        run: |
+          make image-build-azure-authz
+          docker push ${AZURE_AUTHZ_IMG}
+        env:
+          AZURE_AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ env.IMG_TAG }}
 
   # ── Job 2: Dispatch Helm chart publishing (stub) ───────────────────────────
   dispatch-helm-chart:

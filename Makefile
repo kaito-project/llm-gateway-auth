@@ -2,8 +2,10 @@
 IMG ?= llm-gateway-auth:latest
 OPERATOR_IMG        ?= apikey-operator:latest
 AUTHZ_IMG           ?= apikey-authz:latest
+AZURE_AUTHZ_IMG     ?= azure-authz:latest
 OPERATOR_DOCKERFILE ?= Dockerfile.apikey-operator
 AUTHZ_DOCKERFILE    ?= Dockerfile.apikey-authz
+AZURE_AUTHZ_DOCKERFILE ?= Dockerfile.azure-authz
 
 # Helm configuration
 CHART_DIR ?= chart/llm-gateway-apikey
@@ -15,7 +17,7 @@ NAMESPACE ?= llm-gateway
 CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 USE_EXISTING_CLUSTER ?= true
 
-.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-all image-push-operator image-push-authz kind-load-operator kind-load-authz kind-load-all
+.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-azure-authz image-build-all image-push-operator image-push-authz image-push-azure-authz kind-load-operator kind-load-authz kind-load-azure-authz kind-load-all
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -113,6 +115,7 @@ all: generate fmt vet build ## Run generate, fmt, vet, and build.
 build: ## Build manager binary.
 	go build -ldflags="-s -w" -o bin/apikey-operator ./cmd/apikey-operator/
 	go build -ldflags="-s -w" -o bin/apikey-authz ./cmd/apikey-authz/
+	go build -ldflags="-s -w" -o bin/azure-authz ./cmd/azure-authz/
 
 .PHONY: tidy
 tidy: ## Run go mod tidy.
@@ -140,8 +143,12 @@ image-build-operator:
 image-build-authz:
 	$(CONTAINER_RUNTIME) build -f $(AUTHZ_DOCKERFILE) -t $(AUTHZ_IMG) .
 
-## image-build-all: Build all three images (base + operator + authz)
-image-build-all: image-build image-build-operator image-build-authz
+## image-build-azure-authz: Build the azure-authz image
+image-build-azure-authz:
+	$(CONTAINER_RUNTIME) build -f $(AZURE_AUTHZ_DOCKERFILE) -t $(AZURE_AUTHZ_IMG) .
+
+## image-build-all: Build all images (base + operator + authz + azure-authz)
+image-build-all: image-build image-build-operator image-build-authz image-build-azure-authz
 
 ## image-push: Push the container image
 image-push:
@@ -154,6 +161,10 @@ image-push-operator:
 ## image-push-authz: Push the apikey-authz image
 image-push-authz:
 	$(CONTAINER_RUNTIME) push $(AUTHZ_IMG)
+
+## image-push-azure-authz: Push the azure-authz image
+image-push-azure-authz:
+	$(CONTAINER_RUNTIME) push $(AZURE_AUTHZ_IMG)
 
 ## Backwards-compatible aliases
 docker-build: image-build
@@ -262,5 +273,15 @@ else
 	kind load docker-image $(AUTHZ_IMG) --name $(KIND_CLUSTER_NAME)
 endif
 
+## kind-load-azure-authz: Build and load azure-authz image into kind
+kind-load-azure-authz: image-build-azure-authz
+ifeq ($(CONTAINER_RUNTIME),podman)
+	podman save $(AZURE_AUTHZ_IMG) -o /tmp/kind-azure-authz.tar
+	kind load image-archive /tmp/kind-azure-authz.tar --name $(KIND_CLUSTER_NAME)
+	rm -f /tmp/kind-azure-authz.tar
+else
+	kind load docker-image $(AZURE_AUTHZ_IMG) --name $(KIND_CLUSTER_NAME)
+endif
+
 ## kind-load-all: Build and load all images into kind
-kind-load-all: kind-load kind-load-operator kind-load-authz
+kind-load-all: kind-load kind-load-operator kind-load-authz kind-load-azure-authz
