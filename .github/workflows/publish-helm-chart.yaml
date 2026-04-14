@@ -1,0 +1,56 @@
+# Publish LLM-Gateway Helm Chart
+#
+# Packages the llm-gateway-apikey Helm chart and publishes it to GitHub
+# Pages using the gh-pages branch.
+#
+# Triggered automatically by publish-mcr-images.yaml after images are
+# pushed to MCR, or manually via workflow_dispatch.
+name: Publish LLM-Gateway Helm Chart
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.1.0)'
+        required: true
+  repository_dispatch:
+    types: [publish-llm-gateway-helm-chart]
+
+permissions:
+  id-token: write # Required for requesting the JWT
+  packages: write
+  contents: write
+  actions: read
+  deployments: read
+  pull-requests: read
+
+jobs:
+  publish-helm-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+          disable-telemetry: true
+
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          submodules: true
+          fetch-depth: 0
+          ref: ${{ github.event.client_payload.tag || github.event.inputs.tag }}
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p packaged-chart
+          cp -r chart/llm-gateway-apikey packaged-chart/
+
+      - name: Publish Helm chart
+        uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          charts_dir: packaged-chart
+          target_dir: charts
+          linting: off
