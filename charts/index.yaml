@@ -1,0 +1,24 @@
+apiVersion: v1
+entries:
+  llm-gateway-apikey:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-04-21T02:18:33.135935955Z"
+    description: API key authentication for Kubernetes-native LLM gateways via Istio
+      ext_authz
+    digest: a33b1b138b8edc57ee8aa779d4f7aa534a68635df6564607a1087ed234b5f8a5
+    keywords:
+    - llm
+    - gateway
+    - api-key
+    - istio
+    - ext-authz
+    - kaito
+    name: llm-gateway-apikey
+    sources:
+    - https://github.com/kaito-project/llm-gateway-auth
+    type: application
+    urls:
+    - https://kaito-project.github.io/llm-gateway-auth/charts/llm-gateway-apikey-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-04-21T02:18:33.134018515Z"
