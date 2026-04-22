@@ -7,6 +7,11 @@ OPERATOR_DOCKERFILE ?= Dockerfile.apikey-operator
 AUTHZ_DOCKERFILE    ?= Dockerfile.apikey-authz
 AZURE_AUTHZ_DOCKERFILE ?= Dockerfile.azure-authz
 
+# Buildx configuration
+ARCH             ?= amd64
+OUTPUT_TYPE      ?= type=registry
+BUILD_FLAGS      ?=
+
 # Helm configuration
 CHART_DIR ?= chart/llm-gateway-apikey
 RELEASE_NAME ?= llm-gateway-apikey
@@ -17,7 +22,7 @@ NAMESPACE ?= llm-gateway
 CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 USE_EXISTING_CLUSTER ?= true
 
-.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-azure-authz image-build-all image-push-operator image-push-authz image-push-azure-authz kind-load-operator kind-load-authz kind-load-azure-authz kind-load-all
+.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-azure-authz image-build-all image-push-operator image-push-authz image-push-azure-authz kind-load-operator kind-load-authz kind-load-azure-authz kind-load-all docker-buildx
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -131,21 +136,62 @@ clean: ## Remove build artifacts.
 
 ##@ Docker
 
+## docker-buildx: Ensure buildx builder instance is available (docker only)
+.PHONY: docker-buildx
+docker-buildx:
+ifeq ($(CONTAINER_RUNTIME),docker)
+	@if ! docker buildx inspect llm-gateway > /dev/null 2>&1; then \
+		docker buildx create --name llm-gateway --use; \
+	else \
+		docker buildx use llm-gateway; \
+	fi
+endif
+
 ## image-build: Build the container image (docker or podman)
 image-build:
 	$(CONTAINER_RUNTIME) build -t $(IMG) .
 
 ## image-build-operator: Build the apikey-operator image
-image-build-operator:
-	$(CONTAINER_RUNTIME) build -f $(OPERATOR_DOCKERFILE) -t $(OPERATOR_IMG) .
+image-build-operator: docker-buildx
+ifeq ($(CONTAINER_RUNTIME),docker)
+	docker buildx build \
+		--platform="linux/$(ARCH)" \
+		--output=$(OUTPUT_TYPE) \
+		-f $(OPERATOR_DOCKERFILE) \
+		--pull \
+		$(BUILD_FLAGS) \
+		--tag $(OPERATOR_IMG) .
+else
+	podman build -f $(OPERATOR_DOCKERFILE) -t $(OPERATOR_IMG) .
+endif
 
 ## image-build-authz: Build the apikey-authz image
-image-build-authz:
-	$(CONTAINER_RUNTIME) build -f $(AUTHZ_DOCKERFILE) -t $(AUTHZ_IMG) .
+image-build-authz: docker-buildx
+ifeq ($(CONTAINER_RUNTIME),docker)
+	docker buildx build \
+		--platform="linux/$(ARCH)" \
+		--output=$(OUTPUT_TYPE) \
+		-f $(AUTHZ_DOCKERFILE) \
+		--pull \
+		$(BUILD_FLAGS) \
+		--tag $(AUTHZ_IMG) .
+else
+	podman build -f $(AUTHZ_DOCKERFILE) -t $(AUTHZ_IMG) .
+endif
 
 ## image-build-azure-authz: Build the azure-authz image
-image-build-azure-authz:
-	$(CONTAINER_RUNTIME) build -f $(AZURE_AUTHZ_DOCKERFILE) -t $(AZURE_AUTHZ_IMG) .
+image-build-azure-authz: docker-buildx
+ifeq ($(CONTAINER_RUNTIME),docker)
+	docker buildx build \
+		--platform="linux/$(ARCH)" \
+		--output=$(OUTPUT_TYPE) \
+		-f $(AZURE_AUTHZ_DOCKERFILE) \
+		--pull \
+		$(BUILD_FLAGS) \
+		--tag $(AZURE_AUTHZ_IMG) .
+else
+	podman build -f $(AZURE_AUTHZ_DOCKERFILE) -t $(AZURE_AUTHZ_IMG) .
+endif
 
 ## image-build-all: Build all images (base + operator + authz + azure-authz)
 image-build-all: image-build image-build-operator image-build-authz image-build-azure-authz
@@ -254,7 +300,8 @@ else
 endif
 
 ## kind-load-operator: Build and load apikey-operator image into kind
-kind-load-operator: image-build-operator
+kind-load-operator:
+	$(MAKE) image-build-operator OUTPUT_TYPE=type=docker
 ifeq ($(CONTAINER_RUNTIME),podman)
 	podman save $(OPERATOR_IMG) -o /tmp/kind-operator.tar
 	kind load image-archive /tmp/kind-operator.tar --name $(KIND_CLUSTER_NAME)
@@ -264,7 +311,8 @@ else
 endif
 
 ## kind-load-authz: Build and load apikey-authz image into kind
-kind-load-authz: image-build-authz
+kind-load-authz:
+	$(MAKE) image-build-authz OUTPUT_TYPE=type=docker
 ifeq ($(CONTAINER_RUNTIME),podman)
 	podman save $(AUTHZ_IMG) -o /tmp/kind-authz.tar
 	kind load image-archive /tmp/kind-authz.tar --name $(KIND_CLUSTER_NAME)
