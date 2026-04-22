@@ -11,6 +11,9 @@ AZURE_AUTHZ_DOCKERFILE ?= Dockerfile.azure-authz
 ARCH             ?= amd64
 OUTPUT_TYPE      ?= type=registry
 BUILD_FLAGS      ?=
+BUILDX_BUILDER_NAME ?= img-builder
+QEMU_VERSION        ?= 7.2.0-1
+BUILDKIT_VERSION    ?= v0.18.1
 
 # Helm configuration
 CHART_DIR ?= chart/llm-gateway-apikey
@@ -140,10 +143,12 @@ clean: ## Remove build artifacts.
 .PHONY: docker-buildx
 docker-buildx:
 ifeq ($(CONTAINER_RUNTIME),docker)
-	@if ! docker buildx inspect llm-gateway > /dev/null 2>&1; then \
-		docker buildx create --name llm-gateway --use; \
+	@if ! docker buildx ls | grep $(BUILDX_BUILDER_NAME); then \
+		docker run --rm --privileged mcr.microsoft.com/mirror/docker/multiarch/qemu-user-static:$(QEMU_VERSION) --reset -p yes; \
+		docker buildx create --name $(BUILDX_BUILDER_NAME) --driver-opt image=mcr.microsoft.com/oss/v2/moby/buildkit:$(BUILDKIT_VERSION) --use; \
+		docker buildx inspect $(BUILDX_BUILDER_NAME) --bootstrap; \
 	else \
-		docker buildx use llm-gateway; \
+		docker buildx use $(BUILDX_BUILDER_NAME); \
 	fi
 endif
 

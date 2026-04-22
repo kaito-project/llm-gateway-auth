@@ -55,27 +55,18 @@ jobs:
           az acr login -n ${{ secrets.MCR_REGISTRY }}
 
       - name: Build and publish apikey-operator
-        run: |
-          docker build -f $(OPERATOR_DOCKERFILE) -t ${OPERATOR_IMG} .
-          docker push ${OPERATOR_IMG}
+        run: make image-build-operator
         env:
-          OPERATOR_DOCKERFILE: Dockerfile.apikey-operator
           OPERATOR_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-operator:${{ env.IMG_TAG }}
 
       - name: Build and publish apikey-authz
-        run: |
-          docker build -f ${AUTHZ_DOCKERFILE} -t ${AUTHZ_IMG} .
-          docker push ${AUTHZ_IMG}
+        run: make image-build-authz
         env:
-          AUTHZ_DOCKERFILE: Dockerfile.apikey-authz
           AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ env.IMG_TAG }}
 
       - name: Build and publish azure-authz
-        run: |
-          docker build -f ${AZURE_AUTHZ_DOCKERFILE} -t ${AZURE_AUTHZ_IMG} .
-          docker push ${AZURE_AUTHZ_IMG}
+        run: make image-build-azure-authz
         env:
-          AZURE_AUTHZ_DOCKERFILE: Dockerfile.azure-authz
           AZURE_AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ env.IMG_TAG }}
 
   # ── Job 2: Dispatch Helm chart publishing (stub) ───────────────────────────
