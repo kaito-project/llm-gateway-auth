@@ -141,9 +141,7 @@ clean: ## Remove build artifacts.
 docker-buildx:
 ifeq ($(CONTAINER_RUNTIME),docker)
 	@if ! docker buildx inspect llm-gateway > /dev/null 2>&1; then \
-		docker buildx create --name llm-gateway \
-			--driver-opt image=mcr.microsoft.com/oss/v2/moby/buildkit:v0.18.1 --use; \
-		docker buildx inspect llm-gateway --bootstrap; \
+		docker buildx create --name llm-gateway --use; \
 	else \
 		docker buildx use llm-gateway; \
 	fi
