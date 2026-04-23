@@ -116,18 +116,16 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push apikey-operator
-        run: |
-          make image-build-operator
-          docker push ${{ env.OPERATOR_IMG }}
+        run: make image-build-operator
         env:
           OPERATOR_IMG: ${{ steps.get-registry.outputs.registry_repository }}/apikey-operator:${{ env.IMG_TAG }}
+          OUTPUT_TYPE: type=registry
 
       - name: Build and push apikey-authz
-        run: |
-          make image-build-authz
-          docker push ${{ env.AUTHZ_IMG }}
+        run: make image-build-authz
         env:
           AUTHZ_IMG: ${{ steps.get-registry.outputs.registry_repository }}/apikey-authz:${{ env.IMG_TAG }}
+          OUTPUT_TYPE: type=registry
 
       - name: Build and push azure-authz
         run: |

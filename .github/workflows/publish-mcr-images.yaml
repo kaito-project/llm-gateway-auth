@@ -55,23 +55,17 @@ jobs:
           az acr login -n ${{ secrets.MCR_REGISTRY }}
 
       - name: Build and publish apikey-operator
-        run: |
-          make image-build-operator
-          docker push ${OPERATOR_IMG}
+        run: make image-build-operator
         env:
           OPERATOR_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-operator:${{ env.IMG_TAG }}
 
       - name: Build and publish apikey-authz
-        run: |
-          make image-build-authz
-          docker push ${AUTHZ_IMG}
+        run: make image-build-authz
         env:
           AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ env.IMG_TAG }}
 
       - name: Build and publish azure-authz
-        run: |
-          make image-build-azure-authz
-          docker push ${AZURE_AUTHZ_IMG}
+        run: make image-build-azure-authz
         env:
           AZURE_AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ env.IMG_TAG }}
 
