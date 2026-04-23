@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: extauthz-sar
+rules:
+  # Allow the ext_authz server to create SubjectAccessReviews.
+  # This is the minimum permission required for the SAR-based authorization flow.
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+---
+# The authorization policy that end-users/groups must have bound to them
+# in order to pass the SAR check performed by the ext_authz server.
+# In production, bind this to specific Azure AD group OIDs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: extauthz-inference
+rules:
+  - apiGroups: ["aimanager"]
+    resources: ["namespaces"]
+    verbs: ["inference"]

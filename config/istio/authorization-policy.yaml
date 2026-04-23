@@ -1,0 +1,20 @@
+# AuthorizationPolicy with CUSTOM action that routes all incoming
+# requests through the ext_authz gRPC server for authorization.
+# Applied at the ingress gateway so authorization happens at the edge.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: gateway-ext-authz
+  namespace: aks-istio-ingress
+spec:
+  selector:
+    matchLabels:
+      istio: aks-istio-ingressgateway-external
+  action: CUSTOM
+  provider:
+    name: llm-gateway-ext-authz
+  rules:
+    - to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths: ["/*"]

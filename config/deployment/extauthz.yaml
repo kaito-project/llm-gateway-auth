@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: extauthz
+  namespace: llm-gateway
+  labels:
+    app: extauthz
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: extauthz
+  template:
+    metadata:
+      labels:
+        app: extauthz
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: extauthz
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: extauthz
+          image: ${IMG}
+          imagePullPolicy: Always
+          ports:
+            - name: grpc
+              containerPort: 9001
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: EXTAUTHZ_GRPC_ADDR
+              value: ":9001"
+            - name: EXTAUTHZ_METRICS_ADDR
+              value: ":9090"
+            - name: EXTAUTHZ_SAR_API_GROUP
+              value: "aimanager"
+            - name: EXTAUTHZ_SAR_RESOURCE
+              value: "namespaces"
+            - name: EXTAUTHZ_SAR_VERB
+              value: "inference"
+            - name: EXTAUTHZ_FAIL_OPEN
+              value: "false"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            grpc:
+              port: 9001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: 9001
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: extauthz
+  namespace: llm-gateway
+  labels:
+    app: extauthz
+spec:
+  selector:
+    app: extauthz
+  ports:
+    - name: grpc
+      port: 9001
+      targetPort: grpc
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+  type: ClusterIP

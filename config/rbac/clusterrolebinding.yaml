@@ -1,0 +1,29 @@
+# Binding 1: Allow the extauthz ServiceAccount to create SubjectAccessReviews.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: extauthz-sar
+subjects:
+  - kind: ServiceAccount
+    name: extauthz
+    namespace: llm-gateway
+roleRef:
+  kind: ClusterRole
+  name: extauthz-sar
+  apiGroup: rbac.authorization.k8s.io
+---
+# Binding 2: Grant the "inference" verb to all authenticated users.
+# DEMO ONLY — in production, replace "system:authenticated" with specific
+# Azure AD group OIDs from the JWT "groups" claim.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: extauthz-inference-demo
+subjects:
+  - kind: Group
+    name: "system:authenticated"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: extauthz-inference
+  apiGroup: rbac.authorization.k8s.io

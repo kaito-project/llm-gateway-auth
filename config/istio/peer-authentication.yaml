@@ -1,0 +1,10 @@
+# Enforce STRICT mTLS for the llm-gateway namespace so that only
+# Envoy sidecars (presenting mTLS certs) can reach the ext_authz server.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: extauthz-strict-mtls
+  namespace: llm-gateway
+spec:
+  mtls:
+    mode: STRICT

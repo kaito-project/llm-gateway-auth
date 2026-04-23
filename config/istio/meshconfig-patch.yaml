@@ -1,0 +1,9 @@
+# MeshConfig extensionProvider stanza for the ext_authz gRPC server.
+# On AKS, this is applied via a shared ConfigMap (istio-shared-configmap-asm-1-28)
+# in the aks-istio-system namespace. The AKS Istio add-on blocks direct edits
+# to the default ConfigMap; see deploy/setup-aks.sh::configure_meshconfig().
+extensionProviders:
+  - name: llm-gateway-ext-authz
+    envoyExtAuthzGrpc:
+      service: extauthz.llm-gateway.svc.cluster.local
+      port: "9001"

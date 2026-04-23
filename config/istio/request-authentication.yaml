@@ -1,0 +1,18 @@
+# RequestAuthentication for Azure AD / Entra ID JWT validation.
+# Applied to the external ingress gateway so jwt_authn validates tokens
+# and places claims into filter metadata before ext_authz runs.
+#
+# ${AZURE_AD_TENANT_ID} is substituted by envsubst in deploy/setup-aks.sh.
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: azure-ad-jwt
+  namespace: aks-istio-ingress
+spec:
+  selector:
+    matchLabels:
+      istio: aks-istio-ingressgateway-external
+  jwtRules:
+    - issuer: "https://sts.windows.net/${AZURE_AD_TENANT_ID}/"
+      jwksUri: "https://login.microsoftonline.com/${AZURE_AD_TENANT_ID}/discovery/v2.0/keys"
+      forwardOriginalToken: true

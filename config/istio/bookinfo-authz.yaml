@@ -1,0 +1,15 @@
+# Deny unauthenticated requests (those without a valid JWT principal).
+# This prevents bypassing the ext_authz check by omitting the JWT entirely.
+# In demo mode (no RequestAuthentication), this denies ALL requests,
+# which is expected — the 403 proves the authz pipeline is active.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: bookinfo-deny-unauthenticated
+  namespace: bookinfo
+spec:
+  action: DENY
+  rules:
+    - from:
+        - source:
+            notRequestPrincipals: ["*"]
