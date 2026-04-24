@@ -25,7 +25,7 @@ NAMESPACE ?= llm-gateway
 CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 USE_EXISTING_CLUSTER ?= true
 
-.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-azure-authz image-build-all image-push-operator image-push-authz image-push-azure-authz kind-load-operator kind-load-authz kind-load-azure-authz kind-load-all docker-buildx
+.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-package helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-azure-authz image-build-all image-push-operator image-push-authz image-push-azure-authz kind-load-operator kind-load-authz kind-load-azure-authz kind-load-all docker-buildx
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -250,6 +250,10 @@ deploy: install ## Deploy controller to the cluster.
 .PHONY: helm-install
 helm-install: ## Install Helm chart.
 	helm install $(RELEASE_NAME) $(CHART_DIR) --namespace $(NAMESPACE) --create-namespace
+
+.PHONY: helm-package
+helm-package: ## Package Helm chart into a .tgz archive.
+	helm package $(CHART_DIR)
 
 .PHONY: helm-upgrade
 helm-upgrade: ## Upgrade Helm release.
