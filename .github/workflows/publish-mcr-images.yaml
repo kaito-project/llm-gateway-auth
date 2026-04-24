@@ -69,7 +69,7 @@ jobs:
         env:
           AZURE_AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ env.IMG_TAG }}
 
-  # ── Job 2: Dispatch Helm chart publishing (stub) ───────────────────────────
+  # ── Job 2: Dispatch Helm chart publishing ───────────────────────────────────
   dispatch-helm-chart:
     runs-on: ubuntu-latest
     needs: [build-publish-mcr]
