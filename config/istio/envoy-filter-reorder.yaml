@@ -56,10 +56,3 @@ spec:
             transport_api_version: V3
             metadata_context_namespaces:
               - "envoy.filters.http.jwt_authn"
-            filter_enabled_metadata:
-              filter: envoy.filters.http.rbac
-              path:
-                - key: istio_ext_authz_shadow_effective_policy_id
-              value:
-                string_match:
-                  prefix: istio-ext-authz
