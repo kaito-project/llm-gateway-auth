@@ -17,6 +17,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=deploy/aks.env
 source "${SCRIPT_DIR}/aks.env"
 
+# envsubst only reads exported environment variables.
+export AZURE_AD_TENANT_ID
+export EXTAUTHZ_NAMESPACE
+
 # Compute the git short SHA for image tagging.
 GIT_SHA="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || echo "latest")"
 
@@ -180,7 +184,7 @@ build_and_push_image() {
     az acr build \
         --registry "${ACR_NAME}" \
         --image "llm-gateway-auth/extauthz:${GIT_SHA}" \
-        --file "${REPO_ROOT}/Dockerfile" \
+        --file "${REPO_ROOT}/Dockerfile.azure-authz" \
         "${REPO_ROOT}"
 
     log "Image pushed: ${IMG}"
@@ -302,13 +306,10 @@ apply_istio_policies() {
         < "${REPO_ROOT}/config/istio/request-authentication.yaml" \
         | kubectl apply -f -
 
-    # Apply CUSTOM AuthorizationPolicy on the gateway.
-    kubectl apply -f "${REPO_ROOT}/config/istio/authorization-policy.yaml"
-
     # Apply EnvoyFilter to reorder jwt_authn before ext_authz on the gateway.
     # Istio places ext_authz before jwt_authn by default, which means claims
     # aren't available when ext_authz fires. This fixes the ordering.
-    envsubst '${EXTAUTHZ_NAMESPACE}' \
+    envsubst '${EXTAUTHZ_NAMESPACE} ${AZURE_AD_TENANT_ID}' \
         < "${REPO_ROOT}/config/istio/envoy-filter-reorder.yaml" \
         | kubectl apply -f -
 
@@ -355,7 +356,6 @@ main() {
     get_credentials
     enable_ingress_gateway
     build_and_push_image
-    configure_meshconfig
     deploy_extauthz
     deploy_bookinfo
     configure_bookinfo_gateway
