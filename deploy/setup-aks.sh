@@ -301,10 +301,10 @@ apply_istio_policies() {
     stage "Applying Istio authorization policies"
 
     # Apply RequestAuthentication for Azure AD JWT validation on the gateway.
-    # log "Applying RequestAuthentication for Azure AD tenant: ${AZURE_AD_TENANT_ID}"
-    # envsubst '${AZURE_AD_TENANT_ID}' \
-    #     < "${REPO_ROOT}/config/istio/request-authentication.yaml" \
-    #     | kubectl apply -f -
+    log "Applying RequestAuthentication for Azure AD tenant: ${AZURE_AD_TENANT_ID}"
+    envsubst '${AZURE_AD_TENANT_ID}' \
+        < "${REPO_ROOT}/config/istio/request-authentication.yaml" \
+        | kubectl apply -f -
 
     # Apply CUSTOM AuthorizationPolicy on the gateway.
     # kubectl apply -f "${REPO_ROOT}/config/istio/authorization-policy.yaml"
@@ -313,7 +313,7 @@ apply_istio_policies() {
     # Istio places ext_authz before jwt_authn by default, which means claims
     # aren't available when ext_authz fires. This fixes the ordering.
     envsubst '${EXTAUTHZ_NAMESPACE} ${AZURE_AD_TENANT_ID}' \
-        < "${REPO_ROOT}/config/istio/envoy-filter-jwt-extauthz.yaml" \
+        < "${REPO_ROOT}/config/istio/envoy-filter-reorder.yaml" \
         | kubectl apply -f -
 
     log "Istio policies applied."
