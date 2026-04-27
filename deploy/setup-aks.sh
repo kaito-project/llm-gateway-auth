@@ -306,9 +306,6 @@ apply_istio_policies() {
         < "${REPO_ROOT}/config/istio/request-authentication.yaml" \
         | kubectl apply -f -
 
-    # Apply CUSTOM AuthorizationPolicy on the gateway.
-    # kubectl apply -f "${REPO_ROOT}/config/istio/authorization-policy.yaml"
-
     # Apply EnvoyFilter to reorder jwt_authn before ext_authz on the gateway.
     # Istio places ext_authz before jwt_authn by default, which means claims
     # aren't available when ext_authz fires. This fixes the ordering.
@@ -359,7 +356,6 @@ main() {
     get_credentials
     enable_ingress_gateway
     build_and_push_image
-#    configure_meshconfig
     deploy_extauthz
     deploy_bookinfo
     configure_bookinfo_gateway
