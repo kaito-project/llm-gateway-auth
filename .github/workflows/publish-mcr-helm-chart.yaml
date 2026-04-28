@@ -54,4 +54,4 @@ jobs:
       - name: Package and push Helm chart to MCR
         run: |
           helm package chart/llm-gateway-apikey
-          helm push llm-gateway-apikey-${{ env.CHART_VERSION }}.tgz oci://${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/helm
+          helm push llm-gateway-apikey-${{ env.CHART_VERSION }}.tgz oci://${{ secrets.MCR_REGISTRY }}/public/aks/kaito/helm
