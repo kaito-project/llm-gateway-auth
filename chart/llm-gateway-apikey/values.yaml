@@ -114,16 +114,21 @@ istio:
   # Enforce STRICT mTLS in the release namespace.
   strictMTLS: true
 
-  # MeshConfig extensionProvider ConfigMap helper.
-  # create: false is the safe default. NOTES.txt will print the stanza
-  # to merge into your Istio MeshConfig manually.
+  # MeshConfig extensionProvider patching.
+  # When patch=true a post-install/post-upgrade hook Job reads the existing
+  # Istio ConfigMap, merges the apikey-ext-authz extensionProvider entry, and
+  # writes it back. A pre-delete hook removes the entry on uninstall.
+  # This is safe for clusters with other extensionProviders already registered.
   #
-  # Only set create: true when you fully own the target ConfigMap
-  # (e.g., fresh vanilla Istio install with no other extensionProviders).
+  # When patch=false (default), NOTES.txt prints the stanza to merge manually.
   meshConfigConfigMap:
-    create: false
+    patch: false
     namespace: "istio-system"
     name: "istio"
+    image:
+      repository: bitnami/kubectl
+      tag: latest
+      pullPolicy: IfNotPresent
 
   # Inject Istio sidecar into the operator pod.
   # The authz pod always gets a sidecar (needed for mTLS).

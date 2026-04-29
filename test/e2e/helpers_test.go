@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +64,12 @@ const (
 func createNamespace(t *testing.T, prefix string) string {
 	t.Helper()
 	name := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: name,
+		Labels: map[string]string{
+			"istio-injection": "enabled",
+		},
+	}}
 	require.NoError(t, k8sClient.Create(ctx, ns))
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(context.Background(), ns)
@@ -283,4 +290,183 @@ func assertDenied(t *testing.T, cl authv3.AuthorizationClient, req *authv3.Check
 // namespaceHost builds the gateway host header for a tenant namespace.
 func namespaceHost(ns string) string {
 	return fmt.Sprintf("%s.%s", ns, gwDomain)
+}
+
+// ---------------------------------------------------------------------------
+// Istio ingress helpers
+// ---------------------------------------------------------------------------
+
+const (
+	ingressGatewayNS   = "istio-system"
+	ingressGatewayName = "istio-ingressgateway"
+	ingressHTTPPort    = 80
+)
+
+// portForwardIngressGateway starts kubectl port-forward to the Istio ingress
+// gateway HTTP port and returns the local address. Torn down on t.Cleanup.
+func portForwardIngressGateway(t *testing.T) string {
+	t.Helper()
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	localPort := lis.Addr().(*net.TCPAddr).Port
+	lis.Close()
+
+	cmd := exec.CommandContext(ctx,
+		"kubectl", "--context", "kind-llm-gateway-test",
+		"port-forward", "-n", ingressGatewayNS,
+		fmt.Sprintf("svc/%s", ingressGatewayName),
+		fmt.Sprintf("%d:%d", localPort, ingressHTTPPort),
+	)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
+	deadline := time.Now().Add(portFwdTimeout)
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if dialErr == nil {
+			conn.Close()
+			return addr
+		}
+		time.Sleep(portFwdDialWait)
+	}
+	t.Fatalf("timed out waiting for port-forward to ingress gateway %s", addr)
+	return ""
+}
+
+// deployEchoServer creates a simple nginx pod and ClusterIP service in the
+// given namespace. The pod returns 200 on any path. Cleaned up on t.Cleanup.
+func deployEchoServer(t *testing.T, namespace string) {
+	t.Helper()
+
+	yaml := fmt.Sprintf(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: echo
+  namespace: %s
+  labels:
+    app: echo
+spec:
+  containers:
+    - name: echo
+      image: nginx:1.27-alpine
+      ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: %s
+spec:
+  selector:
+    app: echo
+  ports:
+    - port: 80
+      targetPort: 80
+`, namespace, namespace)
+
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", "kind-llm-gateway-test",
+		"apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(yaml)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "deploy echo server: %s", string(out))
+	t.Cleanup(func() {
+		del := exec.Command("kubectl", "--context", "kind-llm-gateway-test",
+			"delete", "-f", "-", "--ignore-not-found")
+		del.Stdin = strings.NewReader(yaml)
+		_ = del.Run()
+	})
+
+	// Wait for the echo pod to be ready.
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		status := exec.CommandContext(ctx, "kubectl", "--context", "kind-llm-gateway-test",
+			"get", "pod", "echo", "-n", namespace, "-o", "jsonpath={.status.phase}")
+		phase, _ := status.Output()
+		if strings.TrimSpace(string(phase)) == "Running" {
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+	t.Fatalf("timed out waiting for echo pod in %s", namespace)
+}
+
+// applyIstioResources creates an Istio Gateway + VirtualService that routes
+// traffic for the given host through the ingress gateway to the echo service
+// in the namespace. Cleaned up on t.Cleanup.
+func applyIstioResources(t *testing.T, namespace, host string) {
+	t.Helper()
+
+	yaml := fmt.Sprintf(`
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: echo-gateway
+  namespace: %[1]s
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "%[2]s"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: echo-vs
+  namespace: %[1]s
+spec:
+  hosts:
+    - "%[2]s"
+  gateways:
+    - echo-gateway
+  http:
+    - route:
+        - destination:
+            host: echo.%[1]s.svc.cluster.local
+            port:
+              number: 80
+`, namespace, host)
+
+	cmd := exec.CommandContext(ctx, "kubectl", "--context", "kind-llm-gateway-test",
+		"apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(yaml)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "apply Istio resources: %s", string(out))
+	t.Cleanup(func() {
+		del := exec.Command("kubectl", "--context", "kind-llm-gateway-test",
+			"delete", "-f", "-", "--ignore-not-found")
+		del.Stdin = strings.NewReader(yaml)
+		_ = del.Run()
+	})
+}
+
+// httpGet performs an HTTP GET to the ingress gateway with the given host
+// header, auth header, and path. Returns the status code.
+func httpGet(t *testing.T, gwAddr, host, authHeader, path string) int {
+	t.Helper()
+
+	url := fmt.Sprintf("http://%s%s", gwAddr, path)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	require.NoError(t, err)
+	req.Host = host
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	return resp.StatusCode
 }

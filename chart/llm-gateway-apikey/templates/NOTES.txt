@@ -19,7 +19,14 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
   Provider name:                   {{ .Values.istio.providerName }}
   Strict mTLS:                     {{ .Values.istio.strictMTLS }}
 
-{{- if not .Values.istio.meshConfigConfigMap.create }}
+{{- if .Values.istio.meshConfigConfigMap.patch }}
+
+  MeshConfig patching is ENABLED.
+  A post-install/post-upgrade Job will automatically merge the ext_authz
+  provider "{{ .Values.istio.providerName }}" into ConfigMap
+  {{ .Values.istio.meshConfigConfigMap.namespace }}/{{ .Values.istio.meshConfigConfigMap.name }}.
+  A pre-delete Job will remove it on helm uninstall.
+{{- else }}
 
   IMPORTANT: You must register the ext_authz provider in your Istio MeshConfig.
   Add the following stanza to your MeshConfig extensionProviders:
@@ -37,6 +44,8 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
   For AKS managed Istio (ASM):
     Add the stanza to the shared ConfigMap:
     kubectl edit configmap istio-shared-configmap-<revision> -n aks-istio-system
+
+  TIP: Set istio.meshConfigConfigMap.patch=true to automate this step.
 {{- end }}
 {{- end }}
 

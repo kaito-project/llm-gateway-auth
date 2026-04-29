@@ -1,0 +1,78 @@
+{{- if and .Values.istio.enabled .Values.istio.meshConfigConfigMap.patch }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-meshconfig-patch
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-weight": "0"
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "llm-gateway-apikey.labels" . | nindent 8 }}
+        {{- include "llm-gateway-apikey.istio.podLabelsDisabled" .Values.istio | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "llm-gateway-apikey.fullname" . }}-meshconfig-patch
+      restartPolicy: OnFailure
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: patch
+          image: "{{ .Values.istio.meshConfigConfigMap.image.repository }}:{{ .Values.istio.meshConfigConfigMap.image.tag }}"
+          {{- with .Values.istio.meshConfigConfigMap.image.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
+          env:
+            - name: CM_NAME
+              value: {{ .Values.istio.meshConfigConfigMap.name | quote }}
+            - name: CM_NS
+              value: {{ .Values.istio.meshConfigConfigMap.namespace | quote }}
+            - name: PROVIDER_NAME
+              value: {{ .Values.istio.providerName | quote }}
+            - name: PROVIDER_SERVICE
+              value: "{{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local"
+            - name: PROVIDER_PORT
+              value: "{{ .Values.authz.grpcPort }}"
+          command:
+            - /bin/sh
+            - -ce
+            - |
+              MESH=$(kubectl get configmap "$CM_NAME" -n "$CM_NS" -o jsonpath='{.data.mesh}')
+
+              # If provider already registered, nothing to do.
+              if echo "$MESH" | grep -q "name: ${PROVIDER_NAME}"; then
+                echo "Provider ${PROVIDER_NAME} already registered in ${CM_NS}/${CM_NAME}, skipping."
+                exit 0
+              fi
+
+              ENTRY="  - name: ${PROVIDER_NAME}
+                  envoyExtAuthzGrpc:
+                    service: ${PROVIDER_SERVICE}
+                    port: \"${PROVIDER_PORT}\""
+
+              if echo "$MESH" | grep -q "extensionProviders:"; then
+                # Append after the existing extensionProviders key.
+                NEW_MESH=$(printf '%s\n' "$MESH" | sed "/extensionProviders:/a\\
+              ${ENTRY}")
+              else
+                # Create the extensionProviders key.
+                NEW_MESH="${MESH}
+              extensionProviders:
+              ${ENTRY}"
+              fi
+
+              kubectl create configmap "$CM_NAME" -n "$CM_NS" \
+                --from-literal=mesh="$NEW_MESH" \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+              echo "Successfully patched ${CM_NS}/${CM_NAME} with provider ${PROVIDER_NAME}."
+{{- end }}
