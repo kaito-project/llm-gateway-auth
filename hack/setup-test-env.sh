@@ -318,6 +318,12 @@ install_istio() {
     --set values.pilot.resources.limits.cpu=500m \
     --set values.pilot.resources.limits.memory=512Mi \
     --set components.cni.enabled=false \
+    --set components.ingressGateways[0].name=istio-ingressgateway \
+    --set components.ingressGateways[0].enabled=true \
+    --set values.gateways.istio-ingressgateway.resources.requests.cpu=50m \
+    --set values.gateways.istio-ingressgateway.resources.requests.memory=64Mi \
+    --set values.gateways.istio-ingressgateway.resources.limits.cpu=200m \
+    --set values.gateways.istio-ingressgateway.resources.limits.memory=256Mi \
     --set values.global.proxy.resources.requests.cpu=50m \
     --set values.global.proxy.resources.requests.memory=64Mi \
     --set values.global.proxy.resources.limits.cpu=200m \
@@ -331,13 +337,17 @@ install_istio() {
 wait_for_istio() {
   if [[ "${SKIP_ISTIO}" == "true" ]]; then return 0; fi
 
-  stage_begin "Waiting for istiod"
+  stage_begin "Waiting for istiod and ingress gateway"
 
   kubectl rollout status deployment/istiod \
     -n istio-system \
     --timeout=300s
 
-  stage_end "istiod is ready"
+  kubectl rollout status deployment/istio-ingressgateway \
+    -n istio-system \
+    --timeout=300s
+
+  stage_end "istiod and ingress gateway are ready"
 }
 
 create_app_namespace() {
@@ -437,7 +447,10 @@ helm_install() {
       --set authz.image.repository="${AUTHZ_IMG_REPO}" \
       --set authz.image.tag="${AUTHZ_IMG_TAG}" \
       --set global.imagePullPolicy=Never \
-      --set istio.enabled=false \
+      --set istio.enabled=true \
+      --set istio.gatewayNamespace=istio-system \
+      --set istio.gatewaySelector.istio=ingressgateway \
+      --set istio.meshConfigConfigMap.patch=true \
       --set operator.webhook.enabled=false \
       --set crds.install=false \
       --set operator.replicaCount=1 \
@@ -453,7 +466,10 @@ helm_install() {
       --set authz.image.repository="${AUTHZ_IMG_REPO}" \
       --set authz.image.tag="${AUTHZ_IMG_TAG}" \
       --set global.imagePullPolicy=Never \
-      --set istio.enabled=false \
+      --set istio.enabled=true \
+      --set istio.gatewayNamespace=istio-system \
+      --set istio.gatewaySelector.istio=ingressgateway \
+      --set istio.meshConfigConfigMap.patch=true \
       --set operator.webhook.enabled=false \
       --set crds.install=false \
       --set operator.replicaCount=1 \
@@ -506,6 +522,17 @@ run_smoke_tests() {
       die "istiod pod is not Running (status: ${istiod_status}). Run: kubectl get pods -n istio-system"
     fi
     ok "istiod is Running."
+
+    # Check ingress gateway pod is Running
+    log "Checking istio-ingressgateway pod status..."
+    local gw_status
+    gw_status="$(kubectl get pods -n istio-system \
+      -l app=istio-ingressgateway --no-headers \
+      | awk '{print $3}' | head -1)"
+    if [[ "${gw_status}" != "Running" ]]; then
+      die "istio-ingressgateway pod is not Running (status: ${gw_status}). Run: kubectl get pods -n istio-system"
+    fi
+    ok "istio-ingressgateway is Running."
 
     # Verify istio-injection label
     log "Checking namespace labels..."
