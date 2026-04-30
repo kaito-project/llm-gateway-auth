@@ -1,0 +1,218 @@
+# Publish release artifacts from 1ES runners.
+#
+# This is the default release workflow. It runs automatically when a GitHub
+# Release is published and can also be triggered manually for testing an
+# existing tag.
+name: Publish Release Artifacts (1ES)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to publish/test (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  id-token: write
+  contents: write
+  packages: write
+  actions: read
+  deployments: read
+  pull-requests: read
+
+env:
+  GO_VERSION: '1.25'
+  GHCR_REGISTRY: ghcr.io
+
+jobs:
+  check-tag:
+    runs-on:
+      labels:
+        - self-hosted
+        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
+        - JobId=checkTag-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - id: release
+        name: Validate release tag
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          echo "${TAG}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${TAG#v}" >> "${GITHUB_OUTPUT}"
+
+  build-scan-push-images:
+    runs-on:
+      labels:
+        - self-hosted
+        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
+        - JobId=buildScanPushImages-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    needs: [check-tag]
+    environment: publish-mcr
+    outputs:
+      ghcr_repository: ${{ steps.registries.outputs.ghcr_repository }}
+    steps:
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.check-tag.outputs.tag }}
+
+      - id: registries
+        name: Set registry paths
+        run: |
+          echo "ghcr_repository=$(echo "${{ env.GHCR_REGISTRY }}/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" >> "${GITHUB_OUTPUT}"
+
+      - name: Build apikey-operator locally
+        run: make image-build-operator OUTPUT_TYPE=type=docker
+        env:
+          OPERATOR_IMG: llm-gateway-local/apikey-operator:${{ needs.check-tag.outputs.version }}
+
+      - name: Build apikey-authz locally
+        run: make image-build-authz OUTPUT_TYPE=type=docker
+        env:
+          AUTHZ_IMG: llm-gateway-local/apikey-authz:${{ needs.check-tag.outputs.version }}
+
+      - name: Build azure-authz locally
+        run: make image-build-azure-authz OUTPUT_TYPE=type=docker
+        env:
+          AZURE_AUTHZ_IMG: llm-gateway-local/azure-authz:${{ needs.check-tag.outputs.version }}
+
+      - name: Scan apikey-operator
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: llm-gateway-local/apikey-operator:${{ needs.check-tag.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+
+      - name: Scan apikey-authz
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: llm-gateway-local/apikey-authz:${{ needs.check-tag.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+
+      - name: Scan azure-authz
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          image-ref: llm-gateway-local/azure-authz:${{ needs.check-tag.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+
+      - name: Login to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate to ACR
+        run: |
+          az login --identity
+          az acr login -n ${{ secrets.MCR_REGISTRY }}
+
+      - name: Tag and push images
+        run: |
+          VERSION="${{ needs.check-tag.outputs.version }}"
+          GHCR_REPOSITORY="${{ steps.registries.outputs.ghcr_repository }}"
+          MCR_REPOSITORY="${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito"
+
+          docker tag "llm-gateway-local/apikey-operator:${VERSION}" "${GHCR_REPOSITORY}/apikey-operator:${VERSION}"
+          docker tag "llm-gateway-local/apikey-authz:${VERSION}" "${GHCR_REPOSITORY}/apikey-authz:${VERSION}"
+          docker tag "llm-gateway-local/azure-authz:${VERSION}" "${GHCR_REPOSITORY}/azure-authz:${VERSION}"
+
+          docker tag "llm-gateway-local/apikey-operator:${VERSION}" "${MCR_REPOSITORY}/apikey-operator:${VERSION}"
+          docker tag "llm-gateway-local/apikey-authz:${VERSION}" "${MCR_REPOSITORY}/apikey-authz:${VERSION}"
+          docker tag "llm-gateway-local/azure-authz:${VERSION}" "${MCR_REPOSITORY}/azure-authz:${VERSION}"
+
+          docker push "${MCR_REPOSITORY}/apikey-operator:${VERSION}"
+          docker push "${MCR_REPOSITORY}/apikey-authz:${VERSION}"
+          docker push "${MCR_REPOSITORY}/azure-authz:${VERSION}"
+
+          docker push "${GHCR_REPOSITORY}/apikey-operator:${VERSION}"
+          docker push "${GHCR_REPOSITORY}/apikey-authz:${VERSION}"
+          docker push "${GHCR_REPOSITORY}/azure-authz:${VERSION}"
+
+  publish-github-helm-chart:
+    runs-on:
+      labels:
+        - self-hosted
+        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
+        - JobId=publishGithubHelmChart-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    needs: [check-tag, build-scan-push-images]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          submodules: true
+          fetch-depth: 0
+          ref: ${{ needs.check-tag.outputs.tag }}
+
+      - name: Package Helm chart
+        run: |
+          mkdir -p packaged-chart
+          cp -r chart/llm-gateway-apikey packaged-chart/
+
+      - name: Publish Helm chart
+        uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          charts_dir: packaged-chart
+          target_dir: charts
+          linting: off
+
+  publish-mcr-helm-chart:
+    runs-on:
+      labels:
+        - self-hosted
+        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
+        - JobId=publishMcrHelmChart-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    needs: [check-tag, build-scan-push-images]
+    environment: publish-mcr
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.check-tag.outputs.tag }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: 'v3.17.3'
+
+      - name: Update Chart.yaml version from tag
+        run: |
+          sed -i "s/^version:.*/version: ${{ needs.check-tag.outputs.version }}/" chart/llm-gateway-apikey/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.check-tag.outputs.version }}\"/" chart/llm-gateway-apikey/Chart.yaml
+
+      - name: Authenticate to ACR
+        run: |
+          az login --identity
+          az acr login -n ${{ secrets.MCR_REGISTRY }}
+
+      - name: Package and push Helm chart to MCR
+        run: |
+          helm package chart/llm-gateway-apikey
+          helm push llm-gateway-apikey-${{ needs.check-tag.outputs.version }}.tgz oci://${{ secrets.MCR_REGISTRY }}/public/aks/kaito/helm
