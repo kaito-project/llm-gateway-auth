@@ -41,7 +41,7 @@ jobs:
         name: Validate release tag
         run: |
           TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
-          echo "${TAG}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+          echo "${TAG}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
           echo "version=${TAG#v}" >> "${GITHUB_OUTPUT}"
 
