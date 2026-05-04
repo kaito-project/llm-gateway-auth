@@ -103,20 +103,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          {{- if .Values.operator.webhook.enabled }}
-          volumeMounts:
-            - name: webhook-certs
-              mountPath: /tmp/k8s-webhook-server/serving-certs
-          {{- end }}
-      {{- if .Values.operator.webhook.enabled }}
-      volumes:
-        # cert-controller updates this Secret in-process (it Get()s a placeholder
-        # Secret created by the chart, generates a self-signed CA + serving cert,
-        # and writes them back via Update). The kubelet projects updated keys
-        # into the mount automatically, so the webhook server picks up rotated
-        # certs without a pod restart.
-        - name: webhook-certs
-          secret:
-            secretName: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-tls
-            defaultMode: 420
-      {{- end }}
+      # No webhook-certs volume: the operator reads tls.crt/tls.key directly
+      # out of the rotator-managed Secret on every TLS handshake (via a
+      # client-go Secret informer/lister), so cert rotations are picked up
+      # immediately without an on-disk mount or a kubelet refresh window.
