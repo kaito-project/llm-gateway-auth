@@ -59,6 +59,19 @@ spec:
             {{- if not .Values.operator.webhook.enabled }}
             - --enable-webhook=false
             {{- end }}
+          {{- if .Values.operator.webhook.enabled }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WEBHOOK_NAME
+              value: {{ include "llm-gateway-apikey.fullname" . }}-validating-webhook
+            - name: WEBHOOK_SECRET_NAME
+              value: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-tls
+            - name: WEBHOOK_SERVICE_NAME
+              value: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook
+          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.operator.metricsPort }}
@@ -94,11 +107,16 @@ spec:
           volumeMounts:
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
-              readOnly: true
           {{- end }}
       {{- if .Values.operator.webhook.enabled }}
       volumes:
+        # cert-controller updates this Secret in-process (it Get()s a placeholder
+        # Secret created by the chart, generates a self-signed CA + serving cert,
+        # and writes them back via Update). The kubelet projects updated keys
+        # into the mount automatically, so the webhook server picks up rotated
+        # certs without a pod restart.
         - name: webhook-certs
           secret:
             secretName: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-tls
+            defaultMode: 420
       {{- end }}

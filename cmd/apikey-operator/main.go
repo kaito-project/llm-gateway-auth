@@ -2,10 +2,13 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
+	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -16,6 +19,12 @@ import (
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 	"github.com/kaito-project/llm-gateway-auth/internal/controller"
 	"github.com/kaito-project/llm-gateway-auth/internal/webhook"
+)
+
+const (
+	webhookCertDir = "/tmp/k8s-webhook-server/serving-certs"
+	caName         = "apikey-operator-ca"
+	caOrganization = "kaito.sh"
 )
 
 func main() {
@@ -67,11 +76,49 @@ func main() {
 		os.Exit(1)
 	}
 
+	// certsReady is closed by cert-controller once the webhook serving cert
+	// is written to disk and the ValidatingWebhookConfiguration's caBundle is
+	// patched. We must defer webhook registration until then so the server
+	// doesn't start with stale or missing certs.
+	certsReady := make(chan struct{})
+
 	if enableWebhook {
-		mgr.GetWebhookServer().Register(
-			"/validate-kaito-sh-v1alpha1-apikey",
-			admission.WithValidator[*v1alpha1.APIKey](scheme, &webhook.APIKeyValidator{}),
-		)
+		podNamespace := os.Getenv("POD_NAMESPACE")
+		webhookName := os.Getenv("WEBHOOK_NAME")
+		secretName := os.Getenv("WEBHOOK_SECRET_NAME")
+		serviceName := os.Getenv("WEBHOOK_SERVICE_NAME")
+		if podNamespace == "" || webhookName == "" || secretName == "" || serviceName == "" {
+			ctrl.Log.Error(nil, "POD_NAMESPACE, WEBHOOK_NAME, WEBHOOK_SECRET_NAME, and WEBHOOK_SERVICE_NAME must be set when --enable-webhook=true")
+			os.Exit(1)
+		}
+
+		if err := rotator.AddRotator(mgr, &rotator.CertRotator{
+			SecretKey: types.NamespacedName{
+				Namespace: podNamespace,
+				Name:      secretName,
+			},
+			CertDir:        webhookCertDir,
+			CAName:         caName,
+			CAOrganization: caOrganization,
+			DNSName:        fmt.Sprintf("%s.%s.svc", serviceName, podNamespace),
+			IsReady:        certsReady,
+			Webhooks: []rotator.WebhookInfo{{
+				Name: webhookName,
+				Type: rotator.Validating,
+			}},
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to set up cert rotator")
+			os.Exit(1)
+		}
+
+		go func() {
+			<-certsReady
+			ctrl.Log.Info("webhook certs ready, registering validator")
+			mgr.GetWebhookServer().Register(
+				"/validate-kaito-sh-v1alpha1-apikey",
+				admission.WithValidator[*v1alpha1.APIKey](scheme, &webhook.APIKeyValidator{}),
+			)
+		}()
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
