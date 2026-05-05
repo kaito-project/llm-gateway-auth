@@ -19,7 +19,6 @@
 //	  --set authz.image.tag=latest \
 //	  --set global.imagePullPolicy=Never \
 //	  --set istio.enabled=false \
-//	  --set operator.webhook.enabled=false \
 //	  --set crds.install=false
 //
 // Run with:

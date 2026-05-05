@@ -1,15 +1,9 @@
-{{- if .Values.operator.webhook.enabled }}
-{{- if ne .Values.operator.webhookTLS.mode "cert-manager" }}
-{{- fail "operator.webhook.enabled=true requires operator.webhookTLS.mode=cert-manager" }}
-{{- end }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: {{ include "llm-gateway-apikey.fullname" . }}-validating-webhook
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
-  annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-cert
 webhooks:
   - name: vapikey.kaito.sh
     admissionReviewVersions:
@@ -26,4 +20,3 @@ webhooks:
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["apikeys"]
-{{- end }}
