@@ -35,17 +35,20 @@ import (
 const (
 	caName         = "apikey-operator-ca"
 	caOrganization = "kaito.sh"
+	// webhookCertDir is mounted as an emptyDir tmpfs in the operator pod
+	// solely to satisfy cert-controller's startup ensureCertsMounted() poll.
+	// The actual serving cert is loaded from the Secret on every handshake;
+	// see the GetCertificate wiring below.
+	webhookCertDir = "/tmp/k8s-webhook-server/serving-certs"
 )
 
 func main() {
 	var metricsAddr string
 	var probeAddr string
-	var enableWebhook bool
 	var enableLeaderElection bool
 	var webhookPort int
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the health probe endpoint binds to.")
-	flag.BoolVar(&enableWebhook, "enable-webhook", true, "Enable the validating admission webhook server.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443, "Port the validating admission webhook listens on.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. Ensures only one active controller at a time.")
@@ -71,45 +74,33 @@ func main() {
 
 	// Webhook config from env (set via Helm + Downward API). We need these
 	// up front because the webhook server is wired into the manager.
-	var (
-		podNamespace, webhookName, secretName, serviceName string
-		secretLister                                       corev1listers.SecretLister
-	)
-	if enableWebhook {
-		podNamespace = os.Getenv("POD_NAMESPACE")
-		webhookName = os.Getenv("WEBHOOK_NAME")
-		secretName = os.Getenv("WEBHOOK_SECRET_NAME")
-		serviceName = os.Getenv("WEBHOOK_SERVICE_NAME")
-		if podNamespace == "" || webhookName == "" || secretName == "" || serviceName == "" {
-			ctrl.Log.Error(nil, "POD_NAMESPACE, WEBHOOK_NAME, WEBHOOK_SECRET_NAME, and WEBHOOK_SERVICE_NAME must be set when --enable-webhook=true")
-			os.Exit(1)
-		}
-
-		// Build a namespace-scoped Secret informer/lister so the webhook
-		// server can read the rotator-managed serving cert directly out of
-		// the Secret on every TLS handshake. This avoids the kubelet
-		// projected-Secret refresh lag and removes the need for an on-disk
-		// cert mount.
-		ctx := ctrl.SetupSignalHandler()
-		var err error
-		secretLister, err = newSecretLister(ctx, ctrl.GetConfigOrDie(), podNamespace)
-		if err != nil {
-			ctrl.Log.Error(err, "unable to start secret lister for webhook TLS")
-			os.Exit(1)
-		}
-		// Stash the signal context for mgr.Start below.
-		signalCtx = ctx
+	podNamespace := os.Getenv("POD_NAMESPACE")
+	webhookName := os.Getenv("WEBHOOK_NAME")
+	secretName := os.Getenv("WEBHOOK_SECRET_NAME")
+	serviceName := os.Getenv("WEBHOOK_SERVICE_NAME")
+	if podNamespace == "" || webhookName == "" || secretName == "" || serviceName == "" {
+		ctrl.Log.Error(nil, "POD_NAMESPACE, WEBHOOK_NAME, WEBHOOK_SECRET_NAME, and WEBHOOK_SERVICE_NAME must be set")
+		os.Exit(1)
 	}
 
-	mgrOpts := ctrl.Options{
+	// Build a namespace-scoped Secret informer/lister so the webhook server
+	// can read the rotator-managed serving cert directly out of the Secret on
+	// every TLS handshake. This avoids the kubelet projected-Secret refresh
+	// lag and removes the need for an on-disk cert mount.
+	signalCtx := ctrl.SetupSignalHandler()
+	secretLister, err := newSecretLister(signalCtx, ctrl.GetConfigOrDie(), podNamespace)
+	if err != nil {
+		ctrl.Log.Error(err, "unable to start secret lister for webhook TLS")
+		os.Exit(1)
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "apikey-operator.kaito.sh",
-	}
-	if enableWebhook {
-		mgrOpts.WebhookServer = runtimewebhook.NewServer(runtimewebhook.Options{
+		WebhookServer: runtimewebhook.NewServer(runtimewebhook.Options{
 			Port: webhookPort,
 			TLSOpts: []func(*tls.Config){
 				func(cfg *tls.Config) {
@@ -119,10 +110,8 @@ func main() {
 					}
 				},
 			},
-		})
-	}
-
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
+		}),
+	})
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -135,46 +124,41 @@ func main() {
 		os.Exit(1)
 	}
 
-	if enableWebhook {
-		// certsReady is closed by cert-controller once the webhook serving
-		// cert has been written to the Secret and the
-		// ValidatingWebhookConfiguration's caBundle has been patched. We do
-		// not gate webhook registration on it: with no on-disk CertDir the
-		// rotator's ensureCertsMounted() poll never succeeds and IsReady
-		// never closes. Instead the GetCertificate callback above returns
-		// (nil, nil) until the Secret is populated, so kube-apiserver simply
-		// retries the handshake while bootstrap is in flight.
-		certsReady := make(chan struct{})
-
-		if err := rotator.AddRotator(mgr, &rotator.CertRotator{
-			SecretKey: types.NamespacedName{
-				Namespace: podNamespace,
-				Name:      secretName,
-			},
-			CAName:         caName,
-			CAOrganization: caOrganization,
-			DNSName:        fmt.Sprintf("%s.%s.svc", serviceName, podNamespace),
-			IsReady:        certsReady,
-			// Only the leader writes the Secret; otherwise the two replicas
-			// race on Update and one crashes with a 409 conflict.
-			RequireLeaderElection: enableLeaderElection,
-			Webhooks: []rotator.WebhookInfo{{
-				Name: webhookName,
-				Type: rotator.Validating,
-			}},
-		}); err != nil {
-			ctrl.Log.Error(err, "unable to set up cert rotator")
-			os.Exit(1)
-		}
-
-		// Register the validator up front so controller-runtime starts the
-		// webhook server as part of mgr.Start(); the TLS handshake is
-		// satisfied dynamically by GetCertificate against the Secret lister.
-		mgr.GetWebhookServer().Register(
-			"/validate-kaito-sh-v1alpha1-apikey",
-			admission.WithValidator[*v1alpha1.APIKey](scheme, &webhook.APIKeyValidator{}),
-		)
+	// cert-controller generates a self-signed CA + serving cert, writes them
+	// to the rotator-managed Secret, and patches the caBundle into the
+	// ValidatingWebhookConfiguration. We set CertDir to an emptyDir tmpfs
+	// mount purely to satisfy the rotator's startup ensureCertsMounted()
+	// poll (which os.Stat()s the cert file and otherwise times out, returns
+	// "could not mount certs", and crashes the manager). The webhook server
+	// itself ignores this directory: GetCertificate above reads the live
+	// cert from the Secret informer on every handshake, so rotations are
+	// picked up without a pod restart.
+	if err := rotator.AddRotator(mgr, &rotator.CertRotator{
+		SecretKey: types.NamespacedName{
+			Namespace: podNamespace,
+			Name:      secretName,
+		},
+		CertDir:        webhookCertDir,
+		CAName:         caName,
+		CAOrganization: caOrganization,
+		DNSName:        fmt.Sprintf("%s.%s.svc", serviceName, podNamespace),
+		IsReady:        make(chan struct{}),
+		// Only the leader writes the Secret; otherwise the two replicas race
+		// on Update and one crashes with a 409 conflict.
+		RequireLeaderElection: enableLeaderElection,
+		Webhooks: []rotator.WebhookInfo{{
+			Name: webhookName,
+			Type: rotator.Validating,
+		}},
+	}); err != nil {
+		ctrl.Log.Error(err, "unable to set up cert rotator")
+		os.Exit(1)
 	}
+
+	mgr.GetWebhookServer().Register(
+		"/validate-kaito-sh-v1alpha1-apikey",
+		admission.WithValidator[*v1alpha1.APIKey](scheme, &webhook.APIKeyValidator{}),
+	)
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
@@ -185,20 +169,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := signalCtx
-	if ctx == nil {
-		ctx = ctrl.SetupSignalHandler()
-	}
 	ctrl.Log.Info("starting controller manager")
-	if err := mgr.Start(ctx); err != nil {
+	if err := mgr.Start(signalCtx); err != nil {
 		ctrl.Log.Error(err, "problem running manager")
 		os.Exit(1)
 	}
 }
-
-// signalCtx is set by main() when the webhook secret lister needs to start
-// before the manager. It is then reused as the manager's stop channel.
-var signalCtx context.Context
 
 // newSecretLister starts a namespace-scoped Secret informer and returns a
 // lister once the cache has synced. The webhook TLS GetCertificate callback

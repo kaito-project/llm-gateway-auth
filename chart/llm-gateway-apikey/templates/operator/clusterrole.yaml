@@ -32,8 +32,6 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Webhook TLS — cert-controller patches the ValidatingWebhookConfiguration's
   # caBundle in-process and watches for changes that require re-rotation.
-  {{- if .Values.operator.webhook.enabled }}
   - apiGroups: ["admissionregistration.k8s.io"]
     resources: ["validatingwebhookconfigurations"]
     verbs: ["get", "list", "watch", "update", "patch"]
-  {{- end }}

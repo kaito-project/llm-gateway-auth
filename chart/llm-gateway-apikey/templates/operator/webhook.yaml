@@ -1,4 +1,3 @@
-{{- if .Values.operator.webhook.enabled }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -21,4 +20,3 @@ webhooks:
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["apikeys"]
-{{- end }}
