@@ -3,7 +3,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-cert
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
 spec:
@@ -12,9 +12,9 @@ spec:
   renewBefore: {{ .Values.operator.webhookTLS.certManager.renewBefore | default "360h" }}
   dnsNames:
     - {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook
-    - {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook.{{ .Release.Namespace }}
-    - {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook.{{ .Release.Namespace }}.svc
-    - {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook.{{ .Release.Namespace }}.svc.cluster.local
+    - {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook.{{ include "llm-gateway-apikey.namespace" . }}
+    - {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook.{{ include "llm-gateway-apikey.namespace" . }}.svc
+    - {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook.{{ include "llm-gateway-apikey.namespace" . }}.svc.cluster.local
   issuerRef:
     {{- if .Values.operator.webhookTLS.certManager.issuerName }}
     name: {{ .Values.operator.webhookTLS.certManager.issuerName }}

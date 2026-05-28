@@ -3,7 +3,7 @@ apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
   name: {{ include "llm-gateway-apikey.fullname" . }}-strict-mtls
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
 spec:

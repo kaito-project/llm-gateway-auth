@@ -10,6 +10,15 @@ global:
 # regardless of the Helm release name.
 fullnameOverride: "apikey"
 
+# Override the namespace into which this chart's namespaced resources are
+# installed. Defaults to .Release.Namespace (i.e. the parent release's namespace
+# when included as a subchart). Set this when you want the apikey components
+# to live in a dedicated namespace separate from the parent release.
+# NOTE: the target namespace must exist beforehand — this chart does not create
+# it. The istio.meshConfigConfigMap.namespace and istio.gatewayNamespace values
+# are independent and unaffected by this override.
+namespaceOverride: ""
+
 # ── apikey-operator ───────────────────────────────────────────────────────────
 # Manages the APIKey CRD lifecycle (create, rotate, expire) and runs
 # the validating admission webhook.

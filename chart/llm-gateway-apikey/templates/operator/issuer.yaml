@@ -3,7 +3,7 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: {{ include "llm-gateway-apikey.fullname" . }}-operator-selfsigned
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
 spec:

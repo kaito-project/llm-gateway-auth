@@ -3,7 +3,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ include "llm-gateway-apikey.fullname" . }}-meshconfig-unpatch
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
   annotations:

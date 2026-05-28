@@ -9,7 +9,7 @@ metadata:
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
   annotations:
-    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-cert
+    cert-manager.io/inject-ca-from: {{ include "llm-gateway-apikey.namespace" . }}/{{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-cert
 webhooks:
   - name: vapikey.kaito.sh
     admissionReviewVersions:
@@ -17,7 +17,7 @@ webhooks:
     clientConfig:
       service:
         name: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook
-        namespace: {{ .Release.Namespace }}
+        namespace: {{ include "llm-gateway-apikey.namespace" . }}
         path: /validate-kaito-sh-v1alpha1-apikey
     failurePolicy: Fail
     sideEffects: None
