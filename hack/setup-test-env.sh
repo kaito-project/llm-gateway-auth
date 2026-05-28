@@ -451,7 +451,6 @@ helm_install() {
       --set istio.gatewayNamespace=istio-system \
       --set istio.gatewaySelector.istio=ingressgateway \
       --set istio.meshConfigConfigMap.patch=true \
-      --set operator.webhook.enabled=false \
       --set crds.install=false \
       --set operator.replicaCount=1 \
       --set authz.replicaCount=1 \
@@ -470,7 +469,6 @@ helm_install() {
       --set istio.gatewayNamespace=istio-system \
       --set istio.gatewaySelector.istio=ingressgateway \
       --set istio.meshConfigConfigMap.patch=true \
-      --set operator.webhook.enabled=false \
       --set crds.install=false \
       --set operator.replicaCount=1 \
       --set authz.replicaCount=1 \

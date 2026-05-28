@@ -48,19 +48,13 @@ operator:
   leaderElection:
     enabled: true           # Ensures only one active operator replica reconciles.
 
-  # ── Webhook ──
-  webhook:
-    enabled: true           # Set to false to skip webhook resources (kind/dev).
-
   # ── Webhook TLS ──
-  # cert-manager is required when the webhook is enabled.
-  # The chart creates a Certificate + SelfSigned Issuer (or uses your existing issuer).
-  webhookTLS:
-    mode: cert-manager
-    certManager:
-      issuerName: ""      # Empty = auto-create a SelfSigned Issuer.
-      duration: "8760h"
-      renewBefore: "360h"
+  # The operator self-manages webhook TLS via open-policy-agent/cert-controller.
+  # A self-signed CA + serving cert are generated in-process, written to a
+  # Secret, and the ValidatingWebhookConfiguration's caBundle is patched at
+  # runtime. The webhook server reads the cert directly from the Secret on
+  # every TLS handshake (no on-disk mount). No external cert-manager required.
+  webhookTLS: {}
 
   # Ports (match cmd/apikey-operator flag defaults).
   metricsPort: 8080

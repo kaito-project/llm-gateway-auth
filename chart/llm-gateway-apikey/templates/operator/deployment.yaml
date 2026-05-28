@@ -56,9 +56,17 @@ spec:
             {{- if .Values.operator.leaderElection.enabled }}
             - --leader-elect=true
             {{- end }}
-            {{- if not .Values.operator.webhook.enabled }}
-            - --enable-webhook=false
-            {{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WEBHOOK_NAME
+              value: {{ include "llm-gateway-apikey.fullname" . }}-validating-webhook
+            - name: WEBHOOK_SECRET_NAME
+              value: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-tls
+            - name: WEBHOOK_SERVICE_NAME
+              value: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook
           ports:
             - name: metrics
               containerPort: {{ .Values.operator.metricsPort }}
@@ -66,11 +74,9 @@ spec:
             - name: health
               containerPort: {{ .Values.operator.healthPort }}
               protocol: TCP
-            {{- if .Values.operator.webhook.enabled }}
             - name: webhook
               containerPort: {{ .Values.operator.webhookPort }}
               protocol: TCP
-            {{- end }}
           resources:
             {{- toYaml .Values.operator.resources | nindent 12 }}
           readinessProbe:
@@ -90,15 +96,15 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          {{- if .Values.operator.webhook.enabled }}
           volumeMounts:
+            # cert-controller's startup poll os.Stat()s a cert file in this
+            # directory; without the mount it times out after ~10s and the
+            # rotator returns "could not mount certs", crashing the manager.
+            # The webhook server itself ignores this dir and reads the live
+            # cert from the rotator-managed Secret on every handshake.
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
-              readOnly: true
-          {{- end }}
-      {{- if .Values.operator.webhook.enabled }}
       volumes:
         - name: webhook-certs
-          secret:
-            secretName: {{ include "llm-gateway-apikey.fullname" . }}-operator-webhook-tls
-      {{- end }}
+          emptyDir:
+            medium: Memory
