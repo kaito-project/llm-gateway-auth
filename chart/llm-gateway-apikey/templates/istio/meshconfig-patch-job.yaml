@@ -3,7 +3,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: {{ include "llm-gateway-apikey.fullname" . }}-meshconfig-patch
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
   labels:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
   annotations:
@@ -39,7 +39,7 @@ spec:
             - name: PROVIDER_NAME
               value: {{ .Values.istio.providerName | quote }}
             - name: PROVIDER_SERVICE
-              value: "{{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local"
+              value: "{{ include "llm-gateway-apikey.fullname" . }}-authz.{{ include "llm-gateway-apikey.namespace" . }}.svc.cluster.local"
             - name: PROVIDER_PORT
               value: "{{ .Values.authz.grpcPort }}"
           command:

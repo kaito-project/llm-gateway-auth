@@ -4,12 +4,12 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
 
   apikey-operator:
     Deployment: {{ include "llm-gateway-apikey.fullname" . }}-operator
-    Namespace:  {{ .Release.Namespace }}
+    Namespace:  {{ include "llm-gateway-apikey.namespace" . }}
 
   apikey-authz:
     Deployment: {{ include "llm-gateway-apikey.fullname" . }}-authz
-    Namespace:  {{ .Release.Namespace }}
-    gRPC:       {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
+    Namespace:  {{ include "llm-gateway-apikey.namespace" . }}
+    gRPC:       {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ include "llm-gateway-apikey.namespace" . }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
 
 {{- if .Values.istio.enabled }}
 
@@ -34,7 +34,7 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
     extensionProviders:
       - name: {{ .Values.istio.providerName }}
         envoyExtAuthzGrpc:
-          service: {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ .Release.Namespace }}.svc.cluster.local
+          service: {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ include "llm-gateway-apikey.namespace" . }}.svc.cluster.local
           port: "{{ .Values.authz.grpcPort }}"
 
   For vanilla Istio:

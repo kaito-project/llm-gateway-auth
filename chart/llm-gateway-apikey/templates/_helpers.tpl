@@ -22,6 +22,15 @@ Create a default fully qualified app name.
 {{- end }}
 
 {{/*
+Namespace into which the chart's namespaced resources are installed.
+Defaults to .Release.Namespace, but can be overridden via .Values.namespaceOverride
+to install the apikey subchart into a different namespace than the parent release.
+*/}}
+{{- define "llm-gateway-apikey.namespace" -}}
+{{- .Values.namespaceOverride | default .Release.Namespace -}}
+{{- end }}
+
+{{/*
 Chart label value.
 */}}
 {{- define "llm-gateway-apikey.chart" -}}
