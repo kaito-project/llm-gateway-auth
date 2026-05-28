@@ -19,13 +19,13 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.current.keyID
+    - jsonPath: .status.primaryKey.keyID
       name: KeyID
       type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.current.expiresAt
+    - jsonPath: .status.primaryKey.expiresAt
       name: ExpiresAt
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -74,7 +74,7 @@ spec:
                 properties:
                   gracePeriod:
                     description: |-
-                      GracePeriod is the duration for which the previous key remains valid after rotation.
+                      GracePeriod is the duration for which the secondary key remains valid after rotation.
                       Defaults to "24h".
                     type: string
                     x-kubernetes-validations:
@@ -128,8 +128,8 @@ spec:
                   - type
                   type: object
                 type: array
-              current:
-                description: Current holds key ID and expiration info for the active key.
+              primaryKey:
+                description: Primary holds key ID and expiration info for the active key.
                 properties:
                   expiresAt:
                     format: date-time
@@ -151,8 +151,8 @@ spec:
                 - Active
                 - Expired
                 type: string
-              previousKey:
-                description: PreviousKey holds the previous key's info during the grace period after rotation.
+              secondaryKey:
+                description: SecondaryKey holds the secondary key's info during the grace period after rotation.
                 properties:
                   expiresAt:
                     format: date-time

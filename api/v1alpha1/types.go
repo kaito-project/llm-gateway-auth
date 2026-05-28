@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	// DefaultGracePeriod is the default duration for which the previous key remains valid after rotation.
-	DefaultGracePeriod = 24 * time.Hour
+	// DefaultGracePeriod is the default duration for which the secondary key remains valid after rotation.
+	// Defaults to 24 hours.
+	DefaultGracePeriod time.Duration = 24 * time.Hour
 )
 
 // APIKeySpec defines the desired state of APIKey.
@@ -41,7 +42,7 @@ type RotationSpec struct {
 	// +optional
 	RotateAt *metav1.Time `json:"rotateAt,omitempty"`
 
-	// GracePeriod is the duration for which the previous key remains valid after rotation.
+	// GracePeriod is the duration for which the secondary key remains valid after rotation.
 	// Uses Go duration format (e.g. "24h", "168h" for 7 days).
 	// Defaults to "24h".
 	// +optional
@@ -50,7 +51,7 @@ type RotationSpec struct {
 }
 
 // SecretReference references a Secret in the same namespace.
-// The referenced Secret stores both the current key and, during a grace period, the previous key.
+// The referenced Secret stores both the primary key and, during a grace period, the secondary key.
 type SecretReference struct {
 	// Name of the Secret.
 	Name string `json:"name"`
@@ -81,13 +82,13 @@ type APIKeyStatus struct {
 	// +optional
 	Phase APIKeyPhase `json:"phase,omitempty"`
 
-	// Current holds key ID and expiration info for the active key.
+	// Primary holds key ID and expiration info for the active key.
 	// +optional
-	Current *KeyStatus `json:"current,omitempty"`
+	Primary *KeyStatus `json:"primaryKey,omitempty"`
 
-	// PreviousKey holds the previous key's info during the grace period after rotation.
+	// Secondary holds the secondary key's info during the grace period after rotation.
 	// +optional
-	Previous *KeyStatus `json:"previousKey,omitempty"`
+	Secondary *KeyStatus `json:"secondaryKey,omitempty"`
 
 	// SecretRef references the controller-managed Secret that stores the API key plaintext.
 	// +optional
@@ -109,9 +110,9 @@ type APIKeyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="KeyID",type=string,JSONPath=`.status.current.keyID`
+// +kubebuilder:printcolumn:name="KeyID",type=string,JSONPath=`.status.primaryKey.keyID`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="ExpiresAt",type=string,JSONPath=`.status.current.expiresAt`
+// +kubebuilder:printcolumn:name="ExpiresAt",type=string,JSONPath=`.status.primaryKey.expiresAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // APIKey is the Schema for the apikeys API.

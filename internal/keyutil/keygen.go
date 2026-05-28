@@ -9,11 +9,11 @@ import (
 )
 
 const (
-	DefaultPrefix     = "sk-"
-	SecretName        = "llm-api-key"
-	SecretKey         = "apiKey"
-	PreviousSecretKey = "previousApiKey"
-	SingletonName     = "default"
+	DefaultPrefix      = "sk-"
+	SecretName         = "llm-api-key"
+	SecretKey          = "apiKey"
+	SecondarySecretKey = "secondaryApiKey"
+	SingletonName      = "default"
 )
 
 // GenerateResult holds the output of key generation.

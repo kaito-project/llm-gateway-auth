@@ -55,7 +55,7 @@ func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Res
 		},
 	}
 
-	if prevRaw, ok := secret.Data[keyutil.PreviousSecretKey]; ok && len(prevRaw) > 0 {
+	if prevRaw, ok := secret.Data[keyutil.SecondarySecretKey]; ok && len(prevRaw) > 0 {
 		prevHash := keyutil.HashKey(string(prevRaw))
 		entries[prevHash] = keyindex.TenantRecord{
 			Namespace: req.Namespace,

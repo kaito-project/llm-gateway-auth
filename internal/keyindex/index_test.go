@@ -103,7 +103,7 @@ func TestSetNamespaceKeys_MultipleEntries(t *testing.T) {
 
 	rec1, ok := idx.Lookup("hashCurrent")
 	if !ok {
-		t.Fatal("expected to find current key")
+		t.Fatal("expected to find primary key")
 	}
 	if rec1.KeyID != "newKey" {
 		t.Errorf("expected keyID newKey, got %s", rec1.KeyID)
@@ -111,7 +111,7 @@ func TestSetNamespaceKeys_MultipleEntries(t *testing.T) {
 
 	rec2, ok := idx.Lookup("hashPrev")
 	if !ok {
-		t.Fatal("expected to find previous key")
+		t.Fatal("expected to find secondary key")
 	}
 	if rec2.KeyID != "oldKey" {
 		t.Errorf("expected keyID oldKey, got %s", rec2.KeyID)

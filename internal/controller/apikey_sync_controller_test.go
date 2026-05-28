@@ -62,7 +62,7 @@ func TestSyncReconcile_EmptyKey(t *testing.T) {
 	assert.Equal(t, 0, idx.Size(), "expected index size 0 for empty key")
 }
 
-func TestSyncReconcile_SyncsCurrentKey(t *testing.T) {
+func TestSyncReconcile_SyncsPrimaryKey(t *testing.T) {
 	s := setupScheme()
 	idx := keyindex.New()
 
@@ -94,20 +94,20 @@ func TestSyncReconcile_SyncsCurrentKey(t *testing.T) {
 	assert.Equal(t, 1, idx.Size())
 }
 
-func TestSyncReconcile_SyncsCurrentAndPreviousKey(t *testing.T) {
+func TestSyncReconcile_SyncsPrimaryAndSecondaryKey(t *testing.T) {
 	s := setupScheme()
 	idx := keyindex.New()
 
-	rawKey := "sk-current-key"
-	prevKey := "sk-previous-key"
+	rawKey := "sk-primary-key"
+	prevKey := "sk-secondary-key"
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "llm-api-key",
 			Namespace: "team-alpha",
 		},
 		Data: map[string][]byte{
-			keyutil.SecretKey:         []byte(rawKey),
-			keyutil.PreviousSecretKey: []byte(prevKey),
+			keyutil.SecretKey:          []byte(rawKey),
+			keyutil.SecondarySecretKey: []byte(prevKey),
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
@@ -123,9 +123,9 @@ func TestSyncReconcile_SyncsCurrentAndPreviousKey(t *testing.T) {
 	prevHash := keyutil.HashKey(prevKey)
 
 	_, ok := idx.Lookup(currentHash)
-	assert.True(t, ok, "expected current key hash in index")
+	assert.True(t, ok, "expected primary key hash in index")
 	_, ok = idx.Lookup(prevHash)
-	assert.True(t, ok, "expected previous key hash in index")
+	assert.True(t, ok, "expected secondary key hash in index")
 	assert.Equal(t, 2, idx.Size())
 }
 
@@ -165,19 +165,19 @@ func TestSyncReconcile_ReplacesStaleEntries(t *testing.T) {
 	assert.Equal(t, 1, idx.Size())
 }
 
-func TestSyncReconcile_EmptyPreviousKeyIgnored(t *testing.T) {
+func TestSyncReconcile_EmptySecondaryKeyIgnored(t *testing.T) {
 	s := setupScheme()
 	idx := keyindex.New()
 
-	rawKey := "sk-only-current"
+	rawKey := "sk-only-primary"
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "llm-api-key",
 			Namespace: "team-alpha",
 		},
 		Data: map[string][]byte{
-			keyutil.SecretKey:         []byte(rawKey),
-			keyutil.PreviousSecretKey: []byte(""),
+			keyutil.SecretKey:          []byte(rawKey),
+			keyutil.SecondarySecretKey: []byte(""),
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
@@ -188,11 +188,11 @@ func TestSyncReconcile_EmptyPreviousKeyIgnored(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Only the current key should be indexed (empty previousApiKey is ignored)
+	// Only the primary key should be indexed (empty secondaryApiKey is ignored)
 	assert.Equal(t, 1, idx.Size())
 	currentHash := keyutil.HashKey(rawKey)
 	_, ok := idx.Lookup(currentHash)
-	assert.True(t, ok, "expected current key hash in index")
+	assert.True(t, ok, "expected primary key hash in index")
 }
 
 func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
