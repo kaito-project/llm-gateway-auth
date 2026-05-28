@@ -77,7 +77,7 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return r.handleRotation(ctx, &apiKey, secret, prefix)
 	}
 
-	if err := r.cleanupExpiredPreviousKey(ctx, &apiKey, secret); err != nil {
+	if err := r.cleanupExpiredSecondaryKey(ctx, &apiKey, secret); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -140,7 +140,7 @@ func (r *APIKeyReconciler) markNotReady(ctx context.Context, apiKey *v1alpha1.AP
 func (r *APIKeyReconciler) handleDeletion(ctx context.Context, apiKey *v1alpha1.APIKey) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	logger.Info("APIKey being deleted", "namespace", apiKey.Namespace, "keyID", currentKeyID(apiKey))
+	logger.Info("APIKey being deleted", "namespace", apiKey.Namespace, "keyID", primaryKeyID(apiKey))
 
 	if controllerutil.ContainsFinalizer(apiKey, finalizerName) {
 		controllerutil.RemoveFinalizer(apiKey, finalizerName)
@@ -182,10 +182,10 @@ func (r *APIKeyReconciler) handleExpiry(ctx context.Context, apiKey *v1alpha1.AP
 
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		obj.Status.Phase = v1alpha1.PhaseExpired
-		if obj.Status.Current == nil {
-			obj.Status.Current = &v1alpha1.KeyStatus{}
+		if obj.Status.Primary == nil {
+			obj.Status.Primary = &v1alpha1.KeyStatus{}
 		}
-		obj.Status.Current.ExpiresAt = &metav1.Time{Time: *expiresAt}
+		obj.Status.Primary.ExpiresAt = &metav1.Time{Time: *expiresAt}
 		meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
@@ -196,17 +196,28 @@ func (r *APIKeyReconciler) handleExpiry(ctx context.Context, apiKey *v1alpha1.AP
 	}); err != nil {
 		return err
 	}
-	logger.Info("APIKey expired", "namespace", apiKey.Namespace, "keyID", currentKeyID(apiKey), "expiresAt", expiresAt.Format(time.RFC3339))
+	logger.Info("APIKey expired", "namespace", apiKey.Namespace, "keyID", primaryKeyID(apiKey), "expiresAt", expiresAt.Format(time.RFC3339))
 	return nil
 }
 
-// createKeySecret generates a new API key, creates the Secret, and requeues.
+// createKeySecret generates two API keys (primary + secondary) at creation time,
+// creates the Secret, and requeues. The secondary key is valid for the grace
+// period so clients can pre-stage rotation from day one.
 func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1.APIKey, prefix string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	result, err := keyutil.GenerateAPIKey(prefix)
+	primary, err := keyutil.GenerateAPIKey(prefix)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to generate API key: %w", err)
+	}
+	secondary, err := keyutil.GenerateAPIKey(prefix)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to generate secondary API key: %w", err)
+	}
+
+	data := map[string][]byte{
+		keyutil.SecretKey:          []byte(primary.RawKey),
+		keyutil.SecondarySecretKey: []byte(secondary.RawKey),
 	}
 
 	secret := &corev1.Secret{
@@ -221,9 +232,7 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			keyutil.SecretKey: []byte(result.RawKey),
-		},
+		Data: data,
 	}
 	if err := r.Create(ctx, secret); err != nil {
 		if !errors.IsAlreadyExists(err) {
@@ -239,24 +248,39 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 				fmt.Sprintf("Secret %q already exists but is not owned by this APIKey", keyutil.SecretName))
 		}
 		if err := r.updateSecretWithRetry(ctx, existing, apiKey, func(s *corev1.Secret) error {
-			s.Data = map[string][]byte{
-				keyutil.SecretKey: []byte(result.RawKey),
-			}
+			s.Data = data
 			return nil
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
+	secondaryExpiresAt := time.Now().Add(r.gracePeriod(apiKey))
+
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		obj.Status.SecretRef = &v1alpha1.SecretReference{
 			Name: keyutil.SecretName,
 		}
+		obj.Status.Secondary = &v1alpha1.KeyStatus{
+			KeyID:     secondary.KeyID,
+			ExpiresAt: &metav1.Time{Time: secondaryExpiresAt},
+		}
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	logger.Info("Secret created for APIKey", "namespace", apiKey.Namespace, "keyID", result.KeyID)
+	logger.Info("Secret created for APIKey", "namespace", apiKey.Namespace, "primaryKeyID", primary.KeyID, "secondaryKeyID", secondary.KeyID)
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+}
+
+// gracePeriod returns the configured grace period for the APIKey, defaulting
+// to v1alpha1.DefaultGracePeriod when unset or unparseable.
+func (r *APIKeyReconciler) gracePeriod(apiKey *v1alpha1.APIKey) time.Duration {
+	if apiKey.Spec.Rotation != nil && apiKey.Spec.Rotation.GracePeriod != "" {
+		if d, err := time.ParseDuration(apiKey.Spec.Rotation.GracePeriod); err == nil {
+			return d
+		}
+	}
+	return v1alpha1.DefaultGracePeriod
 }
 
 // fetchKeySecret retrieves the Secret referenced by the APIKey status.
@@ -271,14 +295,14 @@ func (r *APIKeyReconciler) fetchKeySecret(ctx context.Context, apiKey *v1alpha1.
 	}
 	if err := r.Get(ctx, secretNN, &secret); err != nil {
 		if errors.IsNotFound(err) {
-			logger.Info("Secret not found, will regenerate", "namespace", apiKey.Namespace, "keyID", currentKeyID(apiKey), "secret", secretNN.Name)
+			logger.Info("Secret not found, will regenerate", "namespace", apiKey.Namespace, "keyID", primaryKeyID(apiKey), "secret", secretNN.Name)
 			return nil, true, r.clearSecretRef(ctx, apiKey)
 		}
 		return nil, false, err
 	}
 
 	if rawKey, ok := secret.Data[keyutil.SecretKey]; !ok || len(rawKey) == 0 {
-		logger.Info("Secret has empty key field, will regenerate", "namespace", apiKey.Namespace, "keyID", currentKeyID(apiKey), "secret", secretNN.Name)
+		logger.Info("Secret has empty key field, will regenerate", "namespace", apiKey.Namespace, "keyID", primaryKeyID(apiKey), "secret", secretNN.Name)
 		return nil, true, r.clearSecretRef(ctx, apiKey)
 	}
 
@@ -289,7 +313,7 @@ func (r *APIKeyReconciler) fetchKeySecret(ctx context.Context, apiKey *v1alpha1.
 func (r *APIKeyReconciler) clearSecretRef(ctx context.Context, apiKey *v1alpha1.APIKey) error {
 	return r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		obj.Status.SecretRef = nil
-		obj.Status.Previous = nil
+		obj.Status.Secondary = nil
 	})
 }
 
@@ -311,36 +335,36 @@ func (r *APIKeyReconciler) isRotationDue(apiKey *v1alpha1.APIKey) bool {
 	return true
 }
 
-// cleanupExpiredPreviousKey removes the previous key from the Secret
+// cleanupExpiredSecondaryKey removes the secondary key from the Secret
 // if its grace period has expired.
-func (r *APIKeyReconciler) cleanupExpiredPreviousKey(ctx context.Context, apiKey *v1alpha1.APIKey, secret *corev1.Secret) error {
-	if apiKey.Status.Previous == nil || apiKey.Status.Previous.ExpiresAt == nil || !apiKey.Status.Previous.ExpiresAt.Time.Before(time.Now()) {
+func (r *APIKeyReconciler) cleanupExpiredSecondaryKey(ctx context.Context, apiKey *v1alpha1.APIKey, secret *corev1.Secret) error {
+	if apiKey.Status.Secondary == nil || apiKey.Status.Secondary.ExpiresAt == nil || !apiKey.Status.Secondary.ExpiresAt.Time.Before(time.Now()) {
 		return nil
 	}
 	logger := log.FromContext(ctx)
-	logger.Info("Previous key grace period expired, removing", "namespace", apiKey.Namespace, "previousKeyID", apiKey.Status.Previous.KeyID, "currentKeyID", currentKeyID(apiKey))
+	logger.Info("Secondary key grace period expired, removing", "namespace", apiKey.Namespace, "secondaryKeyID", apiKey.Status.Secondary.KeyID, "primaryKeyID", primaryKeyID(apiKey))
 	if err := r.updateSecretWithRetry(ctx, secret, apiKey, func(s *corev1.Secret) error {
-		delete(s.Data, keyutil.PreviousSecretKey)
+		delete(s.Data, keyutil.SecondarySecretKey)
 		return nil
 	}); err != nil {
 		return err
 	}
 	return r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
-		obj.Status.Previous = nil
+		obj.Status.Secondary = nil
 	})
 }
 
 // syncKeyIndex was moved to the authz-plugin component (internal/indexsync).
 
-// updateActiveStatus sets the APIKey status to Active with the current key info.
+// updateActiveStatus sets the APIKey status to Active with the primary key info.
 func (r *APIKeyReconciler) updateActiveStatus(ctx context.Context, apiKey *v1alpha1.APIKey, keyID string, expiresAt *time.Time) error {
 	return r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		now := metav1.Now()
-		obj.Status.Current = &v1alpha1.KeyStatus{
+		obj.Status.Primary = &v1alpha1.KeyStatus{
 			KeyID: keyID,
 		}
 		if expiresAt != nil {
-			obj.Status.Current.ExpiresAt = &metav1.Time{Time: *expiresAt}
+			obj.Status.Primary.ExpiresAt = &metav1.Time{Time: *expiresAt}
 		}
 		obj.Status.Phase = v1alpha1.PhaseActive
 		obj.Status.LastSyncedAt = &now
@@ -363,8 +387,8 @@ func (r *APIKeyReconciler) computeRequeueAfter(apiKey *v1alpha1.APIKey, expiresA
 			earliest = d
 		}
 	}
-	if apiKey.Status.Previous != nil && apiKey.Status.Previous.ExpiresAt != nil {
-		if d := time.Until(apiKey.Status.Previous.ExpiresAt.Time); d > 0 && (earliest == 0 || d < earliest) {
+	if apiKey.Status.Secondary != nil && apiKey.Status.Secondary.ExpiresAt != nil {
+		if d := time.Until(apiKey.Status.Secondary.ExpiresAt.Time); d > 0 && (earliest == 0 || d < earliest) {
 			earliest = d
 		}
 	}
@@ -381,17 +405,12 @@ func (r *APIKeyReconciler) computeRequeueAfter(apiKey *v1alpha1.APIKey, expiresA
 func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.APIKey, secret *corev1.Secret, prefix string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	var currentKeyID string
-	if apiKey.Status.Current != nil {
-		currentKeyID = apiKey.Status.Current.KeyID
+	var oldPrimaryKeyID string
+	if apiKey.Status.Primary != nil {
+		oldPrimaryKeyID = apiKey.Status.Primary.KeyID
 	}
 
-	// Compute grace period
-	gracePeriod := v1alpha1.DefaultGracePeriod
-	if apiKey.Spec.Rotation != nil && apiKey.Spec.Rotation.GracePeriod != "" {
-		parsed, _ := time.ParseDuration(apiKey.Spec.Rotation.GracePeriod)
-		gracePeriod = parsed
-	}
+	gracePeriod := r.gracePeriod(apiKey)
 
 	// Generate new key
 	result, err := keyutil.GenerateAPIKey(prefix)
@@ -399,16 +418,16 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 		return ctrl.Result{}, fmt.Errorf("failed to generate API key for rotation: %w", err)
 	}
 
-	// Update Secret: move current key to previous, set new as current
+	// Update Secret: move primary key to secondary, set new as primary
 	if err := r.updateSecretWithRetry(ctx, secret, apiKey, func(s *corev1.Secret) error {
 		if len(s.Data) == 0 {
 			return fmt.Errorf("secret %s/%s data is empty, cannot rotate", s.Namespace, s.Name)
 		}
-		currentKey, ok := s.Data[keyutil.SecretKey]
-		if !ok || len(currentKey) == 0 {
-			return fmt.Errorf("secret %s/%s current API key missing or empty, cannot rotate", s.Namespace, s.Name)
+		primaryKey, ok := s.Data[keyutil.SecretKey]
+		if !ok || len(primaryKey) == 0 {
+			return fmt.Errorf("secret %s/%s primary API key missing or empty, cannot rotate", s.Namespace, s.Name)
 		}
-		s.Data[keyutil.PreviousSecretKey] = currentKey
+		s.Data[keyutil.SecondarySecretKey] = primaryKey
 		s.Data[keyutil.SecretKey] = []byte(result.RawKey)
 		return nil
 	}); err != nil {
@@ -428,30 +447,30 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 
 	newHash := keyutil.HashKey(result.RawKey)
 	newKeyID := keyutil.KeyIDFromHash(newHash)
-	previousExpiresAt := rotationTime.Add(gracePeriod)
+	secondaryExpiresAt := rotationTime.Add(gracePeriod)
 
 	// Update status
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		metaNow := metav1.Now()
 		rotatedAt := metav1.NewTime(rotationTime)
-		obj.Status.Current = &v1alpha1.KeyStatus{
+		obj.Status.Primary = &v1alpha1.KeyStatus{
 			KeyID: newKeyID,
 		}
 		if newExpiresAt != nil {
-			obj.Status.Current.ExpiresAt = &metav1.Time{Time: *newExpiresAt}
+			obj.Status.Primary.ExpiresAt = &metav1.Time{Time: *newExpiresAt}
 		}
 		obj.Status.Phase = v1alpha1.PhaseActive
 		obj.Status.LastSyncedAt = &metaNow
 		obj.Status.LastRotatedAt = &rotatedAt
-		obj.Status.Previous = &v1alpha1.KeyStatus{
-			KeyID:     currentKeyID,
-			ExpiresAt: &metav1.Time{Time: previousExpiresAt},
+		obj.Status.Secondary = &v1alpha1.KeyStatus{
+			KeyID:     oldPrimaryKeyID,
+			ExpiresAt: &metav1.Time{Time: secondaryExpiresAt},
 		}
 		meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionTrue,
 			Reason:             "Rotated",
-			Message:            fmt.Sprintf("Key rotated, previous key valid until %s", previousExpiresAt.Format(time.RFC3339)),
+			Message:            fmt.Sprintf("Key rotated, secondary key valid until %s", secondaryExpiresAt.Format(time.RFC3339)),
 			LastTransitionTime: metav1.Now(),
 		})
 	}); err != nil {
@@ -461,8 +480,8 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 	logger.Info("APIKey rotated",
 		"namespace", apiKey.Namespace,
 		"newKeyID", newKeyID,
-		"previousKeyID", currentKeyID,
-		"gracePeriodEnds", previousExpiresAt.Format(time.RFC3339),
+		"secondaryKeyID", oldPrimaryKeyID,
+		"gracePeriodEnds", secondaryExpiresAt.Format(time.RFC3339),
 	)
 
 	return ctrl.Result{RequeueAfter: gracePeriod}, nil
@@ -479,10 +498,10 @@ func (r *APIKeyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// currentKeyID returns the current key ID from status, or "<none>" if not set.
-func currentKeyID(apiKey *v1alpha1.APIKey) string {
-	if apiKey.Status.Current != nil && apiKey.Status.Current.KeyID != "" {
-		return apiKey.Status.Current.KeyID
+// primaryKeyID returns the primary key ID from status, or "<none>" if not set.
+func primaryKeyID(apiKey *v1alpha1.APIKey) string {
+	if apiKey.Status.Primary != nil && apiKey.Status.Primary.KeyID != "" {
+		return apiKey.Status.Primary.KeyID
 	}
 	return "<none>"
 }

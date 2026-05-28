@@ -116,24 +116,24 @@ func TestAPIKeyRotation(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Wait for rotation to complete (status.Previous is set).
+	// Wait for rotation to complete (status.Secondary is set).
 	rotatedKey := waitForAPIKeyRotation(t, testNS, apiKeyName, defaultTimeout)
-	assert.NotNil(t, rotatedKey.Status.Current)
-	assert.NotNil(t, rotatedKey.Status.Previous)
-	assert.NotEqual(t, rotatedKey.Status.Current.KeyID, rotatedKey.Status.Previous.KeyID,
-		"current and previous keyIDs should differ after rotation")
-	t.Logf("Rotation complete: newKeyID=%s previousKeyID=%s",
-		rotatedKey.Status.Current.KeyID, rotatedKey.Status.Previous.KeyID)
+	assert.NotNil(t, rotatedKey.Status.Primary)
+	assert.NotNil(t, rotatedKey.Status.Secondary)
+	assert.NotEqual(t, rotatedKey.Status.Primary.KeyID, rotatedKey.Status.Secondary.KeyID,
+		"primary and secondary keyIDs should differ after rotation")
+	t.Logf("Rotation complete: newKeyID=%s secondaryKeyID=%s",
+		rotatedKey.Status.Primary.KeyID, rotatedKey.Status.Secondary.KeyID)
 
 	// Fetch the rotated Secret — it should have both keys.
 	var rotatedSec corev1.Secret
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKey{Namespace: testNS, Name: apiKeySecret}, &rotatedSec))
 	newKey := string(rotatedSec.Data["apiKey"])
-	previousKey := string(rotatedSec.Data["previousApiKey"])
+	secondaryKey := string(rotatedSec.Data["secondaryApiKey"])
 	assert.NotEmpty(t, newKey)
-	assert.NotEmpty(t, previousKey)
-	assert.NotEqual(t, newKey, previousKey, "new and previous keys should differ")
-	t.Logf("New key: %s... Previous key: %s...", newKey[:6], previousKey[:6])
+	assert.NotEmpty(t, secondaryKey)
+	assert.NotEqual(t, newKey, secondaryKey, "new and secondary keys should differ")
+	t.Logf("New key: %s... Secondary key: %s...", newKey[:6], secondaryKey[:6])
 
 	// Port-forward to authz and verify both keys work during grace period.
 	authzClient := setupAuthzClient(t)
@@ -145,7 +145,7 @@ func TestAPIKeyRotation(t *testing.T) {
 	})
 
 	t.Run("allow_previous_key_during_grace_period", func(t *testing.T) {
-		assertAllowed(t, authzClient, makeCheckRequest(host, "Bearer "+previousKey, "/v1/chat/completions"))
+		assertAllowed(t, authzClient, makeCheckRequest(host, "Bearer "+secondaryKey, "/v1/chat/completions"))
 	})
 
 	t.Run("deny_bogus_key_after_rotation", func(t *testing.T) {
@@ -177,9 +177,9 @@ func TestAPIKeyExpiry(t *testing.T) {
 
 	// Wait for the key to expire.
 	expiredKey := waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseExpired, defaultTimeout)
-	assert.NotNil(t, expiredKey.Status.Current)
-	assert.NotNil(t, expiredKey.Status.Current.ExpiresAt)
-	t.Logf("Key expired at %s", expiredKey.Status.Current.ExpiresAt.Format(time.RFC3339))
+	assert.NotNil(t, expiredKey.Status.Primary)
+	assert.NotNil(t, expiredKey.Status.Primary.ExpiresAt)
+	t.Logf("Key expired at %s", expiredKey.Status.Primary.ExpiresAt.Format(time.RFC3339))
 
 	// Verify the status condition.
 	readyCond := findCondition(expiredKey.Status.Conditions, "Ready")

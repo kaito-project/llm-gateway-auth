@@ -99,8 +99,8 @@ func TestReconcile_GeneratesSecret(t *testing.T) {
 
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
 	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
-	require.NotNil(t, updated.Status.Current, "expected current to be set")
-	assert.NotEmpty(t, updated.Status.Current.KeyID, "expected current.keyID to be set")
+	require.NotNil(t, updated.Status.Primary, "expected primary to be set")
+	assert.NotEmpty(t, updated.Status.Primary.KeyID, "expected primary.keyID to be set")
 }
 
 func TestReconcile_ExistingSecretInStatus(t *testing.T) {
@@ -231,7 +231,7 @@ func TestReconcile_Rotation(t *testing.T) {
 			},
 		},
 		Status: v1alpha1.APIKeyStatus{
-			Current: &v1alpha1.KeyStatus{
+			Primary: &v1alpha1.KeyStatus{
 				KeyID: "oldkeyid",
 			},
 			Phase: v1alpha1.PhaseActive,
@@ -253,17 +253,17 @@ func TestReconcile_Rotation(t *testing.T) {
 	// Verify Secret has both keys
 	var updatedSecret corev1.Secret
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &updatedSecret)
-	assert.Equal(t, rawKey, string(updatedSecret.Data["previousApiKey"]), "expected previous key in secret to match original key")
+	assert.Equal(t, rawKey, string(updatedSecret.Data["secondaryApiKey"]), "expected secondary key in secret to match original key")
 	assert.NotEqual(t, rawKey, string(updatedSecret.Data["apiKey"]), "expected new key to be different from old key")
 
 	// Verify status
 	var updated v1alpha1.APIKey
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
 	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
-	require.NotNil(t, updated.Status.Previous, "expected status.previous to be set")
-	assert.Equal(t, "oldkeyid", updated.Status.Previous.KeyID)
+	require.NotNil(t, updated.Status.Secondary, "expected status.secondaryKey to be set")
+	assert.Equal(t, "oldkeyid", updated.Status.Secondary.KeyID)
 	assert.NotNil(t, updated.Status.LastRotatedAt, "expected status.lastRotatedAt to be set")
-	assert.NotEqual(t, "oldkeyid", updated.Status.Current.KeyID, "expected status.current.keyID to change after rotation")
+	assert.NotEqual(t, "oldkeyid", updated.Status.Primary.KeyID, "expected status.primaryKey.keyID to change after rotation")
 
 	// Verify spec.rotation.rotateAt was NOT mutated (controller should not write to spec)
 	assert.NotNil(t, updated.Spec.Rotation, "expected spec.rotation to be preserved")
@@ -305,7 +305,7 @@ func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
 			},
 		},
 		Status: v1alpha1.APIKeyStatus{
-			Current: &v1alpha1.KeyStatus{
+			Primary: &v1alpha1.KeyStatus{
 				KeyID: "oldkeyid",
 			},
 			Phase: v1alpha1.PhaseActive,
@@ -327,9 +327,9 @@ func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
 
 	// ExpiresAt should be ~48h from now (based on rotation time, not creation time)
-	require.NotNil(t, updated.Status.Current, "expected current to be set")
-	assert.False(t, updated.Status.Current.ExpiresAt.IsZero(), "expected current.expiresAt to be set")
-	expiresIn := time.Until(updated.Status.Current.ExpiresAt.Time)
+	require.NotNil(t, updated.Status.Primary, "expected primary to be set")
+	assert.False(t, updated.Status.Primary.ExpiresAt.IsZero(), "expected primary.expiresAt to be set")
+	expiresIn := time.Until(updated.Status.Primary.ExpiresAt.Time)
 	assert.Greater(t, expiresIn, 47*time.Hour, "expected expiresAt ~48h from now")
 	assert.Less(t, expiresIn, 49*time.Hour, "expected expiresAt ~48h from now")
 }
@@ -337,7 +337,7 @@ func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
 func TestReconcile_GracePeriodExpiry(t *testing.T) {
 	s := setupScheme()
 	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
-	previousKey := "sk-llmgw-OldKeyOldKeyOldKeyOldKeyOldKeyABCD"
+	secondaryKey := "sk-llmgw-OldKeyOldKeyOldKeyOldKeyOldKeyABCD"
 	apiKeyUID := types.UID("grace-period-uid")
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -348,8 +348,8 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 			},
 		},
 		Data: map[string][]byte{
-			"apiKey":         []byte(rawKey),
-			"previousApiKey": []byte(previousKey),
+			"apiKey":          []byte(rawKey),
+			"secondaryApiKey": []byte(secondaryKey),
 		},
 	}
 	pastTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
@@ -363,14 +363,14 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 			Prefix: "sk-",
 		},
 		Status: v1alpha1.APIKeyStatus{
-			Current: &v1alpha1.KeyStatus{
+			Primary: &v1alpha1.KeyStatus{
 				KeyID: "currentid",
 			},
 			Phase: v1alpha1.PhaseActive,
 			SecretRef: &v1alpha1.SecretReference{
 				Name: "llm-api-key",
 			},
-			Previous: &v1alpha1.KeyStatus{
+			Secondary: &v1alpha1.KeyStatus{
 				KeyID:     "prevkeyid",
 				ExpiresAt: &metav1.Time{Time: pastTime.Time}, // Grace period already expired
 			},
@@ -385,16 +385,16 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify status.previous was cleared
+	// Verify status.secondaryKey was cleared
 	var updated v1alpha1.APIKey
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	assert.Nil(t, updated.Status.Previous, "expected status.previous to be cleared after grace period")
+	assert.Nil(t, updated.Status.Secondary, "expected status.secondaryKey to be cleared after grace period")
 
-	// Verify previousApiKey was removed from Secret
+	// Verify secondaryApiKey was removed from Secret
 	var updatedSecret corev1.Secret
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &updatedSecret)
-	_, hasPrevKey := updatedSecret.Data["previousApiKey"]
-	assert.False(t, hasPrevKey, "expected previousApiKey to be removed from Secret")
+	_, hasPrevKey := updatedSecret.Data["secondaryApiKey"]
+	assert.False(t, hasPrevKey, "expected secondaryApiKey to be removed from Secret")
 }
 
 func TestReconcile_SecretConflictNotOwned(t *testing.T) {
@@ -439,4 +439,76 @@ func TestReconcile_SecretConflictNotOwned(t *testing.T) {
 	var updated v1alpha1.APIKey
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
 	assert.Equal(t, v1alpha1.PhasePending, updated.Status.Phase)
+}
+
+func TestGracePeriod_DefaultNeverExpires(t *testing.T) {
+	r := &APIKeyReconciler{}
+
+	// No rotation config => default grace period should be effectively infinite.
+	apiKey := &v1alpha1.APIKey{
+		Spec: v1alpha1.APIKeySpec{Prefix: "sk-"},
+	}
+	got := r.gracePeriod(apiKey)
+	assert.Equal(t, v1alpha1.DefaultGracePeriod, got)
+	assert.True(t, time.Now().Add(got).After(time.Now().Add(100*365*24*time.Hour)),
+		"default grace period should effectively never expire")
+
+	// Empty rotation struct (no GracePeriod set) => still default.
+	apiKey.Spec.Rotation = &v1alpha1.RotationSpec{}
+	assert.Equal(t, v1alpha1.DefaultGracePeriod, r.gracePeriod(apiKey))
+
+	// Unparseable GracePeriod => fall back to default.
+	apiKey.Spec.Rotation.GracePeriod = "not-a-duration"
+	assert.Equal(t, v1alpha1.DefaultGracePeriod, r.gracePeriod(apiKey))
+
+	// Explicit GracePeriod overrides default.
+	apiKey.Spec.Rotation.GracePeriod = "30m"
+	assert.Equal(t, 30*time.Minute, r.gracePeriod(apiKey))
+}
+
+func TestReconcile_SecondaryKeyPersistsWithDefaultGracePeriod(t *testing.T) {
+	s := setupScheme()
+	apiKey := &v1alpha1.APIKey{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default",
+			Namespace: "team-alpha",
+		},
+		Spec: v1alpha1.APIKeySpec{
+			Prefix: "sk-",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
+	r := &APIKeyReconciler{Client: c}
+
+	// First reconcile creates the Secret + both keys with the default grace period.
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
+	})
+	require.NoError(t, err)
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated))
+	require.NotNil(t, updated.Status.Secondary, "expected secondary key to be set on creation")
+	require.NotNil(t, updated.Status.Secondary.ExpiresAt, "expected secondary.expiresAt to be set")
+	assert.True(t, updated.Status.Secondary.ExpiresAt.After(time.Now().Add(100*365*24*time.Hour)),
+		"expected secondary.expiresAt to effectively never expire by default")
+
+	// Second reconcile: secondary key must NOT be cleaned up.
+	_, err = r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
+	})
+	require.NoError(t, err)
+
+	var after v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &after))
+	assert.NotNil(t, after.Status.Secondary, "secondary key should remain under default grace period")
+
+	var secret corev1.Secret
+	require.NoError(t, c.Get(context.Background(),
+		types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &secret))
+	_, hasPrev := secret.Data["secondaryApiKey"]
+	assert.True(t, hasPrev, "secondaryApiKey should remain in Secret under default grace period")
 }

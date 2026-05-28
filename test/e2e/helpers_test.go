@@ -221,14 +221,14 @@ func waitForAPIKeyPhase(
 	)
 }
 
-// waitForAPIKeyRotation polls until the APIKey has status.Previous set (rotation completed).
+// waitForAPIKeyRotation polls until the APIKey has status.Secondary set (rotation completed).
 func waitForAPIKeyRotation(t *testing.T, namespace, name string, timeout time.Duration) *v1alpha1.APIKey {
 	t.Helper()
 	return waitForAPIKey(t, namespace, name, timeout,
 		func(k *v1alpha1.APIKey) bool {
-			return k.Status.Previous != nil && k.Status.LastRotatedAt != nil
+			return k.Status.Secondary != nil && k.Status.LastRotatedAt != nil
 		},
-		"rotation completed (status.Previous set)",
+		"rotation completed (status.Secondary set)",
 	)
 }
 

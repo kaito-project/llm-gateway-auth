@@ -14,7 +14,7 @@ type TenantRecord struct {
 }
 
 // Index is a concurrency-safe in-memory index mapping SHA-256 key hashes
-// to tenant records. Supports multiple hashes per namespace (current + previous
+// to tenant records. Supports multiple hashes per namespace (primary + secondary
 // key during rotation grace periods).
 type Index struct {
 	mu          sync.RWMutex
@@ -43,8 +43,8 @@ func (idx *Index) Upsert(hash string, rec TenantRecord) {
 }
 
 // SetNamespaceKeys atomically replaces all entries for a namespace with the
-// provided entries. This is used during rotation to maintain both the current
-// and previous key in the index simultaneously.
+// provided entries. This is used during rotation to maintain both the primary
+// and secondary key in the index simultaneously.
 func (idx *Index) SetNamespaceKeys(ns string, entries map[string]TenantRecord) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
