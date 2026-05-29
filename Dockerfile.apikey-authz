@@ -16,7 +16,8 @@ RUN GOOS=linux go build \
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────
 # Microsoft Go's crypto backend requires CGO, producing a dynamically-linked
-# binary. The "base" distroless image includes glibc (unlike "minimal").
+# binary that needs glibc at runtime. The "minimal" distroless image strips
+# glibc, so we use "base" (which includes glibc + libssl).
 FROM mcr.microsoft.com/azurelinux/distroless/base:3.0
 COPY --from=builder /out/apikey-authz /apikey-authz
 USER 65532:65532
