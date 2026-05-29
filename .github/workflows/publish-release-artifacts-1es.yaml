@@ -25,6 +25,9 @@ permissions:
 env:
   GO_VERSION: '1.25'
   GHCR_REGISTRY: ghcr.io
+  # Toggle Trivy CVE scans on built images.
+  # TODO: flip to 'true' once the base-image CVE backlog is addressed.
+  ENABLE_TRIVY_SCAN: 'false'
 
 jobs:
   check-tag:
@@ -88,8 +91,7 @@ jobs:
           AZURE_AUTHZ_IMG: llm-gateway-local/azure-authz:${{ needs.check-tag.outputs.version }}
 
       - name: Scan apikey-operator
-        # TODO: re-enable once the base-image CVE backlog is addressed.
-        if: false
+        if: env.ENABLE_TRIVY_SCAN == 'true'
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: llm-gateway-local/apikey-operator:${{ needs.check-tag.outputs.version }}
@@ -101,8 +103,7 @@ jobs:
           timeout: '5m0s'
 
       - name: Scan apikey-authz
-        # TODO: re-enable once the base-image CVE backlog is addressed.
-        if: false
+        if: env.ENABLE_TRIVY_SCAN == 'true'
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: llm-gateway-local/apikey-authz:${{ needs.check-tag.outputs.version }}
@@ -114,8 +115,7 @@ jobs:
           timeout: '5m0s'
 
       - name: Scan azure-authz
-        # TODO: re-enable once the base-image CVE backlog is addressed.
-        if: false
+        if: env.ENABLE_TRIVY_SCAN == 'true'
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           image-ref: llm-gateway-local/azure-authz:${{ needs.check-tag.outputs.version }}
