@@ -1,8 +1,9 @@
 # Istio CRDs (temporary)
 
 This directory ships Istio CRDs bundled with the `llm-gateway-apikey`
-chart so that the `AuthorizationPolicy` (security.istio.io/v1) and
-`EnvoyFilter` (networking.istio.io/v1alpha3) templates under
+chart so that the `AuthorizationPolicy` (security.istio.io/v1),
+`EnvoyFilter` (networking.istio.io/v1alpha3), and `PeerAuthentication`
+(security.istio.io/v1) templates under
 `chart/llm-gateway-apikey/templates/istio/` can apply cleanly on AKS
 clusters that use the **Azure AKS application routing add-on**.
 
@@ -10,10 +11,11 @@ clusters that use the **Azure AKS application routing add-on**.
 
 The AKS app routing add-on installs and manages Istio under the hood,
 but it does **not** currently install the full set of Istio CRDs that
-arbitrary user workloads may need — in particular, `AuthorizationPolicy`
-and `EnvoyFilter` are not always present out of the box. Without these
-CRDs, `helm install` of `llm-gateway-apikey` fails because the chart's
-templates reference Kinds the API server does not know about.
+arbitrary user workloads may need — in particular, `AuthorizationPolicy`,
+`EnvoyFilter`, and `PeerAuthentication` are not always present out of
+the box. Without these CRDs, `helm install` of `llm-gateway-apikey`
+fails because the chart's templates reference Kinds the API server
+does not know about.
 
 To keep the chart self-contained and installable on app-routing-enabled
 clusters, we vendor the CRDs here. Helm installs files under `crds/`
@@ -23,9 +25,9 @@ safe to ship alongside a managed Istio control plane.
 ## When can this be removed?
 
 Delete this directory once the Azure AKS application routing add-on
-installs the required Istio CRDs (`AuthorizationPolicy`,
-`EnvoyFilter`, and anything else `llm-gateway-apikey` templates depend
-on) by default. At that point the managed control plane will own the
+installs the required Istio CRDs (`AuthorizationPolicy`, `EnvoyFilter`,
+`PeerAuthentication`, and anything else `llm-gateway-apikey` templates
+depend on) by default. At that point the managed control plane will own the
 CRD lifecycle and shipping our own copies risks version drift.
 
 ## Source

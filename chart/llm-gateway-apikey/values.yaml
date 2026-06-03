@@ -15,8 +15,8 @@ fullnameOverride: "apikey"
 # when included as a subchart). Set this when you want the apikey components
 # to live in a dedicated namespace separate from the parent release.
 # NOTE: the target namespace must exist beforehand — this chart does not create
-# it. The istio.meshConfigConfigMap.namespace and istio.gatewayNamespace values
-# are independent and unaffected by this override.
+# it. The istio.gatewayNamespace value is independent and unaffected by this
+# override.
 namespaceOverride: ""
 
 # ── apikey-operator ───────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ istio:
 
   # REQUIRED when istio.enabled=true.
   # Namespace where the ingress gateway pods run.
-  # The AuthorizationPolicy is deployed into this namespace.
+  # The EnvoyFilter is deployed into this namespace.
   gatewayNamespace: ""
 
   # REQUIRED when istio.enabled=true.
@@ -110,28 +110,28 @@ istio:
   # Example: { istio: ingressgateway }
   gatewaySelector: {}
 
-  # Name registered in MeshConfig extensionProviders.
-  # Must match the name in your Istio MeshConfig.
-  providerName: "apikey-ext-authz"
-
   # Enforce STRICT mTLS in the release namespace.
   strictMTLS: true
 
-  # MeshConfig extensionProvider patching.
-  # When patch=true a post-install/post-upgrade hook Job reads the existing
-  # Istio ConfigMap, merges the apikey-ext-authz extensionProvider entry, and
-  # writes it back. A pre-delete hook removes the entry on uninstall.
-  # This is safe for clusters with other extensionProviders already registered.
-  #
-  # When patch=false (default), NOTES.txt prints the stanza to merge manually.
-  meshConfigConfigMap:
-    patch: false
-    namespace: "istio-system"
-    name: "istio"
-    image:
-      repository: bitnami/kubectl
-      tag: latest
-      pullPolicy: IfNotPresent
+  # How the ext_authz HTTP filter is inserted into the ingress gateway
+  # filter chain. The chart wires ext_authz directly via EnvoyFilter so it
+  # does not depend on MeshConfig.extensionProviders — this works out of
+  # the box on the AKS Istio add-on where the MeshConfig ConfigMap lives in
+  # aks-istio-system and is managed by the add-on.
+  extAuthzInsert:
+    # INSERT_FIRST  — place ext_authz at the head of the HTTP filter chain.
+    #                 Default. Works without any RequestAuthentication.
+    # INSERT_AFTER  — remove any pre-existing ext_authz filter, then insert
+    #                 ext_authz after jwt_authn so JWT claims are populated
+    #                 in the ext_authz request metadata. Use this when a
+    #                 RequestAuthentication is configured on the gateway.
+    operation: INSERT_FIRST
+    # gRPC timeout for the ext_authz call.
+    timeout: 600s
+    # Envoy filter metadata namespaces forwarded to the ext_authz server.
+    # Set to [ "envoy.filters.http.jwt_authn" ] when operation=INSERT_AFTER
+    # to forward JWT claims.
+    metadataContextNamespaces: []
 
   # Inject Istio sidecar into the operator pod.
   # The authz pod always gets a sidecar (needed for mTLS).
