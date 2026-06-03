@@ -15,38 +15,14 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
 
 == Istio Integration ==
 
-  AuthorizationPolicy deployed to: {{ .Values.istio.gatewayNamespace }}
-  Provider name:                   {{ .Values.istio.providerName }}
-  Strict mTLS:                     {{ .Values.istio.strictMTLS }}
+  EnvoyFilter deployed to:   {{ .Values.istio.gatewayNamespace }}
+  ext_authz target:          {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ include "llm-gateway-apikey.namespace" . }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
+  Insert operation:          {{ .Values.istio.extAuthzInsert.operation }}
+  Strict mTLS:               {{ .Values.istio.strictMTLS }}
 
-{{- if .Values.istio.meshConfigConfigMap.patch }}
-
-  MeshConfig patching is ENABLED.
-  A post-install/post-upgrade Job will automatically merge the ext_authz
-  provider "{{ .Values.istio.providerName }}" into ConfigMap
-  {{ .Values.istio.meshConfigConfigMap.namespace }}/{{ .Values.istio.meshConfigConfigMap.name }}.
-  A pre-delete Job will remove it on helm uninstall.
-{{- else }}
-
-  IMPORTANT: You must register the ext_authz provider in your Istio MeshConfig.
-  Add the following stanza to your MeshConfig extensionProviders:
-
-    extensionProviders:
-      - name: {{ .Values.istio.providerName }}
-        envoyExtAuthzGrpc:
-          service: {{ include "llm-gateway-apikey.fullname" . }}-authz.{{ include "llm-gateway-apikey.namespace" . }}.svc.cluster.local
-          port: "{{ .Values.authz.grpcPort }}"
-
-  For vanilla Istio:
-    kubectl edit configmap istio -n istio-system
-    # Merge the stanza above under meshConfig.extensionProviders
-
-  For AKS managed Istio (ASM):
-    Add the stanza to the shared ConfigMap:
-    kubectl edit configmap istio-shared-configmap-<revision> -n aks-istio-system
-
-  TIP: Set istio.meshConfigConfigMap.patch=true to automate this step.
-{{- end }}
+  The chart wires ext_authz directly via EnvoyFilter on the ingress
+  gateway. No MeshConfig changes are required — this works as-is on the
+  AKS Istio add-on (aks-istio-ingress / aks-istio-system).
 {{- end }}
 
 == Quick Start ==
