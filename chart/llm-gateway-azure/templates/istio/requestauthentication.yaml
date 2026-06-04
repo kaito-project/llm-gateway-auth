@@ -1,0 +1,32 @@
+{{- if .Values.istio.enabled }}
+{{- $gwns := required "istio.gatewayNamespace is required when istio.enabled=true" .Values.istio.gatewayNamespace -}}
+{{- if not .Values.istio.gatewaySelector }}
+{{- fail "istio.gatewaySelector must not be empty when istio.enabled=true" }}
+{{- end }}
+{{- if not .Values.azure.jwt.audiences }}
+{{- fail "azure.jwt.audiences must not be empty (e.g. [\"https://management.core.windows.net/\"])" }}
+{{- end }}
+{{- $issuer := include "llm-gateway-azure.jwt.issuer" . -}}
+{{- $jwks   := include "llm-gateway-azure.jwt.jwksUri" . -}}
+# RequestAuthentication tells Istio's envoy.filters.http.jwt_authn filter how
+# to validate inbound Entra ID JWTs. Validated claims are exposed to downstream
+# HTTP filters (notably ext_authz) under the
+# "envoy.filters.http.jwt_authn" metadata namespace.
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: {{ include "llm-gateway-azure.fullname" . }}-entra-jwt
+  namespace: {{ $gwns }}
+  labels:
+    {{- include "llm-gateway-azure.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- toYaml .Values.istio.gatewaySelector | nindent 6 }}
+  jwtRules:
+    - issuer: {{ $issuer | quote }}
+      jwksUri: {{ $jwks | quote }}
+      audiences:
+        {{- toYaml .Values.azure.jwt.audiences | nindent 8 }}
+      forwardOriginalToken: {{ .Values.azure.jwt.forwardOriginalToken }}
+{{- end }}

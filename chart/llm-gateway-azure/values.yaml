@@ -1,0 +1,141 @@
+# ── Global ────────────────────────────────────────────────────────────────────
+global:
+  # Default pull policy for all images; components can override.
+  imagePullPolicy: IfNotPresent
+  # Labels applied to every resource the chart creates.
+  commonLabels: {}
+
+# Override the chart name used in resource names.
+# With this set, the deployment is named "azure-authz" regardless of the Helm
+# release name.
+fullnameOverride: "azure"
+
+# Override the namespace into which this chart's namespaced resources are
+# installed. Defaults to .Release.Namespace.
+# NOTE: the target namespace must exist beforehand — this chart does not create
+# it. The istio.gatewayNamespace value is independent and unaffected by this
+# override.
+namespaceOverride: ""
+
+# ── azure-authz ───────────────────────────────────────────────────────────────
+# Validates Azure Entra ID JWTs (already verified by Istio's RequestAuthentication)
+# and authorizes requests by translating the OID claim into a Kubernetes
+# SubjectAccessReview against a tenant-scoped namespace.
+authz:
+  image:
+    repository: ""
+    tag: ""                # Defaults to .Chart.AppVersion when empty.
+    pullPolicy: ""         # Defaults to global.imagePullPolicy when empty.
+  replicaCount: 2          # >= 2 for high availability.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  serviceAccount:
+    create: true
+    name: ""               # Auto-derived: "<fullname>-authz"
+    annotations: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Ports (match cmd/azure-authz flag defaults).
+  grpcPort: 9001
+  metricsPort: 9090
+  healthPort: 8081
+
+  # SubjectAccessReview ResourceAttributes used when calling the Kubernetes
+  # API server. These map an authenticated user (Entra OID) to a permission
+  # check of the form: "can <user> <verb> <group>/<resource> in <namespace>?"
+  # The namespace is extracted from the first subdomain of the Host header.
+  sar:
+    apiGroup: aimanager
+    resource: namespaces
+    verb: inference
+
+  # Behavior.
+  failOpen: false           # When true, allow requests if SAR call fails.
+  requestTimeout: 5s
+  cache:
+    size: 1024
+    ttl: 5m
+
+# ── Azure / Entra ID ──────────────────────────────────────────────────────────
+azure:
+  # REQUIRED. Microsoft Entra tenant ID (GUID). Used to derive the JWT issuer
+  # and JWKS URI for Istio's RequestAuthentication. Single-tenant only.
+  tenantId: ""
+
+  jwt:
+    # "v1.0" or "v2.0". Defaults to v1.0 to match Azure Resource Manager /
+    # management.azure.com tokens (iss = https://sts.windows.net/<tenantId>/).
+    # Set "v2.0" for tokens minted from the v2.0 endpoint
+    # (iss = https://login.microsoftonline.com/<tenantId>/v2.0).
+    tokenVersion: "v1.0"
+
+    # Optional overrides. When empty, derived from azure.tenantId + tokenVersion.
+    issuer: ""
+    jwksUri: ""
+
+    # REQUIRED. Accepted "aud" claim values. E.g. for ARM tokens:
+    #   ["https://management.core.windows.net/"]
+    audiences: []
+
+    # Forward the original Authorization header (with the JWT) to upstream
+    # services. The ext_authz server reads the pre-validated claims from
+    # filter metadata regardless of this setting.
+    forwardOriginalToken: true
+
+# ── Istio integration ─────────────────────────────────────────────────────────
+istio:
+  enabled: true
+
+  # Istio control plane revision label.
+  #   "default"  — upstream / vanilla Istio (uses istio-injection=enabled).
+  #   "asm-1-28" — AKS managed add-on (uses istio.io/rev=asm-1-28).
+  revision: "default"
+
+  # REQUIRED when istio.enabled=true.
+  # Namespace where the ingress gateway pods run. The EnvoyFilter and
+  # RequestAuthentication are deployed into this namespace.
+  gatewayNamespace: ""
+
+  # REQUIRED when istio.enabled=true.
+  # Label selector matching the ingress gateway pods.
+  # Example: { istio: ingressgateway }
+  gatewaySelector: {}
+
+  # Enforce STRICT mTLS in the release namespace.
+  strictMTLS: true
+
+  # How the ext_authz HTTP filter is inserted into the ingress gateway
+  # filter chain.
+  extAuthzInsert:
+    # INSERT_AFTER is the default for Azure RBAC: ext_authz runs after
+    # envoy.filters.http.jwt_authn so the validated JWT claims are available
+    # in the ext_authz request metadata under "envoy.filters.http.jwt_authn".
+    # The azure-authz server reads claims from there.
+    #
+    # INSERT_FIRST is supported but the azure-authz server will reject every
+    # request because no claims will be populated.
+    operation: INSERT_AFTER
+    # gRPC timeout for the ext_authz call.
+    timeout: 5s
+    # Filter metadata namespaces forwarded to the ext_authz server.
+    # MUST include "envoy.filters.http.jwt_authn" for the Azure RBAC path.
+    metadataContextNamespaces:
+      - envoy.filters.http.jwt_authn
+
+  # Inject Istio sidecar into the authz pod.
+  injectAuthzSidecar: true
+
+# ── CRDs ──────────────────────────────────────────────────────────────────────
+# CRDs in chart/llm-gateway-azure/crds/ are installed on `helm install` and
+# never upgraded or deleted by Helm. See chart/llm-gateway-azure/crds/README.md
+# for the rationale.
+crds:
+  install: true

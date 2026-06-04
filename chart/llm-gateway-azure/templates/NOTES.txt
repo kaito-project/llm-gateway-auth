@@ -1,0 +1,48 @@
+Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
+
+== Component Deployed ==
+
+  azure-authz:
+    Deployment: {{ include "llm-gateway-azure.fullname" . }}-authz
+    Namespace:  {{ include "llm-gateway-azure.namespace" . }}
+    gRPC:       {{ include "llm-gateway-azure.fullname" . }}-authz.{{ include "llm-gateway-azure.namespace" . }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
+
+{{- if .Values.istio.enabled }}
+
+== Istio Integration ==
+
+  RequestAuthentication:     {{ include "llm-gateway-azure.fullname" . }}-entra-jwt (in {{ .Values.istio.gatewayNamespace }})
+  EnvoyFilter:               {{ include "llm-gateway-azure.fullname" . }}-ext-authz (in {{ .Values.istio.gatewayNamespace }})
+  ext_authz insert order:    {{ .Values.istio.extAuthzInsert.operation }}
+  Strict mTLS:               {{ .Values.istio.strictMTLS }}
+
+  JWT issuer:                {{ include "llm-gateway-azure.jwt.issuer" . }}
+  JWKS URI:                  {{ include "llm-gateway-azure.jwt.jwksUri" . }}
+  Audiences:                 {{ join ", " .Values.azure.jwt.audiences }}
+  Tenant ID:                 {{ .Values.azure.tenantId }}
+{{- end }}
+
+== Quick Start ==
+
+  1. Create a tenant namespace and grant a user the configured permission.
+     The chart's default SAR check is:
+       can <user> {{ .Values.authz.sar.verb }} {{ .Values.authz.sar.apiGroup }}/{{ .Values.authz.sar.resource }} in <namespace>?
+
+     kubectl create namespace team-alpha
+     kubectl create rolebinding team-alpha-inference \
+       --clusterrole=team-alpha-inference \
+       --user=<entra-oid> \
+       -n team-alpha
+
+  2. Acquire an Entra ID token for the configured audience, e.g.:
+
+     az account get-access-token \
+       --resource {{ if .Values.azure.jwt.audiences }}{{ index .Values.azure.jwt.audiences 0 }}{{ else }}https://management.core.windows.net/{{ end }} \
+       --query accessToken -o tsv
+
+  3. Call the gateway with the Bearer token. The tenant namespace is taken
+     from the first subdomain of the Host header:
+
+     curl -H "Authorization: Bearer $TOKEN" \
+          -H "Host: team-alpha.gateway.example.com" \
+          https://<gateway-ip>/

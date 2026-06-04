@@ -1,0 +1,86 @@
+{{- if .Values.istio.enabled }}
+{{- $gwns := required "istio.gatewayNamespace is required when istio.enabled=true" .Values.istio.gatewayNamespace -}}
+{{- if not .Values.istio.gatewaySelector }}
+{{- fail "istio.gatewaySelector must not be empty when istio.enabled=true" }}
+{{- end }}
+{{- $svc := printf "%s-authz.%s.svc.cluster.local" (include "llm-gateway-azure.fullname" .) (include "llm-gateway-azure.namespace" .) -}}
+{{- $cluster := printf "outbound|%d||%s" (int .Values.authz.grpcPort) $svc -}}
+# EnvoyFilter that inserts envoy.filters.http.ext_authz directly into the
+# ingress gateway HTTP filter chain, pointing at the azure-authz gRPC service.
+#
+# For the Azure RBAC path we INSERT_AFTER envoy.filters.http.jwt_authn so the
+# JWT claims validated by RequestAuthentication are populated in the ext_authz
+# request metadata under the "envoy.filters.http.jwt_authn" namespace. The
+# azure-authz server reads them from there and never re-validates the token.
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: {{ include "llm-gateway-azure.fullname" . }}-ext-authz
+  namespace: {{ $gwns }}
+  labels:
+    {{- include "llm-gateway-azure.labels" . | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- toYaml .Values.istio.gatewaySelector | nindent 6 }}
+  configPatches:
+    {{- if eq .Values.istio.extAuthzInsert.operation "INSERT_AFTER" }}
+    # Remove any ext_authz filter Istio may have inserted via a CUSTOM
+    # AuthorizationPolicy so we don't end up with two ext_authz filters
+    # in the chain.
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.ext_authz
+      patch:
+        operation: REMOVE
+    # Insert ext_authz AFTER jwt_authn so JWT claims populated by
+    # RequestAuthentication are available in the ext_authz request metadata.
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.jwt_authn
+      patch:
+        operation: INSERT_AFTER
+    {{- else if eq .Values.istio.extAuthzInsert.operation "INSERT_FIRST" }}
+    # INSERT_FIRST places ext_authz at the head of the HTTP filter chain.
+    # WARNING: with the Azure RBAC path this means ext_authz runs before
+    # jwt_authn, so no validated claims will be in filter metadata and
+    # azure-authz will reject every request with 401.
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+    {{- else }}
+    {{- fail "istio.extAuthzInsert.operation must be \"INSERT_AFTER\" or \"INSERT_FIRST\"" }}
+    {{- end }}
+        value:
+          name: envoy.filters.http.ext_authz
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+            transport_api_version: V3
+            grpc_service:
+              envoy_grpc:
+                cluster_name: {{ $cluster | quote }}
+                authority: {{ $svc | quote }}
+              timeout: {{ .Values.istio.extAuthzInsert.timeout | quote }}
+            {{- with .Values.istio.extAuthzInsert.metadataContextNamespaces }}
+            metadata_context_namespaces:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+{{- end }}

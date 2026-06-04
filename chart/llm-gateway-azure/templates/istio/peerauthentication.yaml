@@ -1,0 +1,12 @@
+{{- if and .Values.istio.enabled .Values.istio.strictMTLS }}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ include "llm-gateway-azure.fullname" . }}-strict-mtls
+  namespace: {{ include "llm-gateway-azure.namespace" . }}
+  labels:
+    {{- include "llm-gateway-azure.labels" . | nindent 4 }}
+spec:
+  mtls:
+    mode: STRICT
+{{- end }}
