@@ -1,0 +1,53 @@
+{{- /*
+PodMonitor resources for Azure Monitor managed Prometheus (ama-metrics).
+
+Gated on .Values.azureMonitor.podMonitor.enabled because the
+azmonitoring.coreos.com/v1 API group is specific to the AKS Azure Monitor
+managed Prometheus add-on (the addon installs these CRDs out-of-band). On
+vanilla Kubernetes or with OSS prometheus-operator these manifests will fail
+to apply — use a standard monitoring.coreos.com/v1 PodMonitor instead, or
+rely on the prometheus.io/scrape annotations already on the pod templates.
+
+Docs:
+  https://learn.microsoft.com/en-us/azure/azure-monitor/containers/prometheus-metrics-scrape-crd
+*/ -}}
+{{- if .Values.azureMonitor.podMonitor.enabled }}
+apiVersion: azmonitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-operator
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+spec:
+  # Limits required by ama-metrics — see docs link above.
+  labelLimit: 63
+  labelNameLengthLimit: 511
+  labelValueLengthLimit: 1023
+  selector:
+    matchLabels:
+      {{- include "llm-gateway-apikey.operator.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.azureMonitor.podMonitor.interval | quote }}
+---
+apiVersion: azmonitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-authz
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+spec:
+  labelLimit: 63
+  labelNameLengthLimit: 511
+  labelValueLengthLimit: 1023
+  selector:
+    matchLabels:
+      {{- include "llm-gateway-apikey.authz.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.azureMonitor.podMonitor.interval | quote }}
+{{- end }}

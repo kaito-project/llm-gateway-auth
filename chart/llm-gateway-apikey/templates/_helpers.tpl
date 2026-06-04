@@ -126,3 +126,29 @@ Istio sidecar disabled label for pods that should NOT get a sidecar.
 sidecar.istio.io/inject: "false"
 {{- end }}
 {{- end }}
+
+{{/*
+Default topologySpreadConstraints — spread replicas across nodes (and zones
+when available) using soft constraints (whenUnsatisfiable: ScheduleAnyway).
+Falls back gracefully on single-node / single-zone clusters.
+
+Pass the selector labels YAML as the dot argument.
+
+Usage:
+  topologySpreadConstraints:
+    {{- include "llm-gateway-apikey.defaultTopologySpread" (include "llm-gateway-apikey.operator.selectorLabels" .) | nindent 4 }}
+*/}}
+{{- define "llm-gateway-apikey.defaultTopologySpread" -}}
+- maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+  labelSelector:
+    matchLabels:
+      {{- . | nindent 6 }}
+- maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
+  labelSelector:
+    matchLabels:
+      {{- . | nindent 6 }}
+{{- end }}

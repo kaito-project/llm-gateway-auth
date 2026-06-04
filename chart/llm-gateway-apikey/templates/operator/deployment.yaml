@@ -46,6 +46,12 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      topologySpreadConstraints:
+        {{- if .Values.operator.topologySpreadConstraints }}
+        {{- toYaml .Values.operator.topologySpreadConstraints | nindent 8 }}
+        {{- else }}
+        {{- include "llm-gateway-apikey.defaultTopologySpread" (include "llm-gateway-apikey.operator.selectorLabels" .) | nindent 8 }}
+        {{- end }}
       containers:
         - name: operator
           image: "{{ required "operator.image.repository is required" .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
