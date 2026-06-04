@@ -85,9 +85,14 @@ azure:
     audiences: []
 
     # Forward the original Authorization header (with the JWT) to upstream
-    # services. The ext_authz server reads the pre-validated claims from
-    # filter metadata regardless of this setting.
-    forwardOriginalToken: true
+    # services. Defaults to false so the bearer token is stripped at the
+    # gateway after validation — only the ext_authz hop (azure-authz) sees
+    # it, and downstream services (e.g. bbr, eep, inference backends) that
+    # may speak plaintext never receive the credential. The ext_authz server
+    # reads the pre-validated claims from filter metadata regardless of this
+    # setting, so flip to true only if an upstream genuinely needs to inspect
+    # the token itself.
+    forwardOriginalToken: false
 
 # ── Istio integration ─────────────────────────────────────────────────────────
 istio:
