@@ -46,7 +46,6 @@ authz:
   # Ports (match cmd/azure-authz flag defaults).
   grpcPort: 9001
   metricsPort: 9090
-  healthPort: 8081
 
   # SubjectAccessReview ResourceAttributes used when calling the Kubernetes
   # API server. These map an authenticated user (Entra OID) to a permission
