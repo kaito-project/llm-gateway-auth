@@ -8,11 +8,13 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
     gRPC:       {{ include "llm-gateway-azureauth.fullname" . }}-authz.{{ include "llm-gateway-azureauth.namespace" . }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
 
 {{- if .Values.istio.enabled }}
+{{- if .Values.istio.gateway.enabled }}
 
 == Istio Integration ==
 
   RequestAuthentication:     {{ include "llm-gateway-azureauth.fullname" . }}-entra-jwt (in {{ .Values.istio.gatewayNamespace }})
   EnvoyFilter:               {{ include "llm-gateway-azureauth.fullname" . }}-ext-authz (in {{ .Values.istio.gatewayNamespace }})
+  AuthorizationPolicy:       {{ include "llm-gateway-azureauth.fullname" . }}-require-jwt (in {{ .Values.istio.gatewayNamespace }})
   ext_authz insert order:    {{ .Values.istio.extAuthzInsert.operation }}
   Strict mTLS:               {{ .Values.istio.strictMTLS }}
 
@@ -20,4 +22,17 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
   JWKS URI:                  {{ include "llm-gateway-azureauth.jwt.jwksUri" . }}
   Audiences:                 {{ join ", " .Values.azure.jwt.audiences }}
   Tenant ID:                 {{ .Values.azure.tenantId }}
+{{- else }}
+
+== Istio Integration ==
+
+  Gateway-side wiring is disabled (istio.gateway.enabled=false).
+  Only the backend resources (azure-authz Deployment/Service, SAR RBAC,
+  PeerAuthentication) are installed by this chart. The gateway-side
+  RequestAuthentication, EnvoyFilter (ext_authz), and AuthorizationPolicy
+  are expected to be rendered per-namespace by modelharness, pointing at
+  the shared azure-authz Service:
+
+    {{ include "llm-gateway-azureauth.fullname" . }}-authz.{{ include "llm-gateway-azureauth.namespace" . }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
+{{- end }}
 {{- end }}

@@ -103,21 +103,35 @@ istio:
   #   "asm-1-28" — AKS managed add-on (uses istio.io/rev=asm-1-28).
   revision: "default"
 
-  # REQUIRED when istio.enabled=true.
-  # Namespace where the ingress gateway pods run. The EnvoyFilter and
-  # RequestAuthentication are deployed into this namespace.
+  # Enforce STRICT mTLS in the release namespace.
+  # When true, a PeerAuthentication is rendered in the backend namespace so
+  # only mTLS clients (e.g. the ingress gateway's sidecar) can reach the
+  # azure-authz pod. This is independent of istio.gateway.enabled.
+  strictMTLS: true
+
+  # ── Gateway-side wiring (opt-in) ────────────────────────────────────────────
+  # When enabled, the chart renders the gateway-side CRs (RequestAuthentication,
+  # EnvoyFilter for ext_authz, AuthorizationPolicy require-jwt backstop) into
+  # istio.gatewayNamespace, targeting istio.gatewaySelector. This is OFF by
+  # default: in production-stack, modelharness renders these per-workload
+  # namespace via auth.mode: azure, selecting each {namespace}-gw. Enable here
+  # only for standalone testing or single-gateway deployments where this chart
+  # owns the gateway integration end to end.
+  gateway:
+    enabled: false
+
+  # REQUIRED when istio.gateway.enabled=true.
+  # Namespace where the ingress gateway pods run. The EnvoyFilter,
+  # RequestAuthentication, and AuthorizationPolicy are deployed here.
   gatewayNamespace: ""
 
-  # REQUIRED when istio.enabled=true.
+  # REQUIRED when istio.gateway.enabled=true.
   # Label selector matching the ingress gateway pods.
   # Example: { istio: ingressgateway }
   gatewaySelector: {}
 
-  # Enforce STRICT mTLS in the release namespace.
-  strictMTLS: true
-
   # How the ext_authz HTTP filter is inserted into the ingress gateway
-  # filter chain.
+  # filter chain. Only used when istio.gateway.enabled=true.
   extAuthzInsert:
     # INSERT_AFTER is the default for Azure RBAC: ext_authz runs after
     # envoy.filters.http.jwt_authn so the validated JWT claims are available

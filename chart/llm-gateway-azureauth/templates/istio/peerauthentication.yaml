@@ -1,4 +1,4 @@
-{{- if and .Values.istio.enabled .Values.istio.strictMTLS }}
+{{- if .Values.istio.strictMTLS }}
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:

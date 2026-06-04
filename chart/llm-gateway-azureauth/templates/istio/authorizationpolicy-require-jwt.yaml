@@ -1,7 +1,7 @@
-{{- if .Values.istio.enabled }}
-{{- $gwns := required "istio.gatewayNamespace is required when istio.enabled=true" .Values.istio.gatewayNamespace -}}
+{{- if and .Values.istio.enabled .Values.istio.gateway.enabled }}
+{{- $gwns := required "istio.gatewayNamespace is required when istio.gateway.enabled=true" .Values.istio.gatewayNamespace -}}
 {{- if not .Values.istio.gatewaySelector }}
-{{- fail "istio.gatewaySelector must not be empty when istio.enabled=true" }}
+{{- fail "istio.gatewaySelector must not be empty when istio.gateway.enabled=true" }}
 {{- end }}
 # Fail-closed backstop for the gateway. Istiod injects istio.authorization
 # into the HCM filter chain whenever any AuthorizationPolicy selects the
