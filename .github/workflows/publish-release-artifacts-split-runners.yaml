@@ -196,12 +196,13 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.check-tag.outputs.tag }}
 
-      - name: Package Helm chart
+      - name: Package Helm charts
         run: |
           mkdir -p packaged-chart
           cp -r chart/llm-gateway-apikey packaged-chart/
+          cp -r chart/llm-gateway-azureauth packaged-chart/
 
-      - name: Publish Helm chart
+      - name: Publish Helm charts
         uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -229,17 +230,21 @@ jobs:
         with:
           version: 'v3.17.3'
 
-      - name: Update Chart.yaml version from tag
+      - name: Update Chart.yaml versions from tag
         run: |
-          sed -i "s/^version:.*/version: ${{ needs.check-tag.outputs.version }}/" chart/llm-gateway-apikey/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${{ needs.check-tag.outputs.version }}\"/" chart/llm-gateway-apikey/Chart.yaml
+          for chart in llm-gateway-apikey llm-gateway-azureauth; do
+            sed -i "s/^version:.*/version: ${{ needs.check-tag.outputs.version }}/" chart/${chart}/Chart.yaml
+            sed -i "s/^appVersion:.*/appVersion: \"${{ needs.check-tag.outputs.version }}\"/" chart/${chart}/Chart.yaml
+          done
 
       - name: Authenticate to ACR
         run: |
           az login --identity
           az acr login -n ${{ secrets.MCR_REGISTRY }}
 
-      - name: Package and push Helm chart to MCR
+      - name: Package and push Helm charts to MCR
         run: |
-          helm package chart/llm-gateway-apikey
-          helm push llm-gateway-apikey-${{ needs.check-tag.outputs.version }}.tgz oci://${{ secrets.MCR_REGISTRY }}/public/aks/kaito/helm
+          for chart in llm-gateway-apikey llm-gateway-azureauth; do
+            helm package chart/${chart}
+            helm push ${chart}-${{ needs.check-tag.outputs.version }}.tgz oci://${{ secrets.MCR_REGISTRY }}/public/aks/kaito/helm
+          done
