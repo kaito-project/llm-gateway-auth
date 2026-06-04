@@ -21,28 +21,3 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
   Audiences:                 {{ join ", " .Values.azure.jwt.audiences }}
   Tenant ID:                 {{ .Values.azure.tenantId }}
 {{- end }}
-
-== Quick Start ==
-
-  1. Create a tenant namespace and grant a user the configured permission.
-     The chart's default SAR check is:
-       can <user> {{ .Values.authz.sar.verb }} {{ .Values.authz.sar.apiGroup }}/{{ .Values.authz.sar.resource }} in <namespace>?
-
-     kubectl create namespace team-alpha
-     kubectl create rolebinding team-alpha-inference \
-       --clusterrole=team-alpha-inference \
-       --user=<entra-oid> \
-       -n team-alpha
-
-  2. Acquire an Entra ID token for the configured audience, e.g.:
-
-     az account get-access-token \
-       --resource {{ if .Values.azure.jwt.audiences }}{{ index .Values.azure.jwt.audiences 0 }}{{ else }}https://management.core.windows.net/{{ end }} \
-       --query accessToken -o tsv
-
-  3. Call the gateway with the Bearer token. The tenant namespace is taken
-     from the first subdomain of the Host header:
-
-     curl -H "Authorization: Bearer $TOKEN" \
-          -H "Host: team-alpha.gateway.example.com" \
-          https://<gateway-ip>/
