@@ -1,10 +1,10 @@
 # Istio CRDs (temporary)
 
-This directory ships Istio CRDs bundled with the `llm-gateway-azure`
+This directory ships Istio CRDs bundled with the `llm-gateway-azureauth`
 chart so that the `EnvoyFilter` (networking.istio.io/v1alpha3),
 `PeerAuthentication` (security.istio.io/v1), and `RequestAuthentication`
 (security.istio.io/v1) templates under
-`chart/llm-gateway-azure/templates/istio/` can apply cleanly on AKS
+`chart/llm-gateway-azureauth/templates/istio/` can apply cleanly on AKS
 clusters that use the **Azure AKS application routing add-on**.
 
 ## Why is this here?
@@ -14,7 +14,7 @@ but it does **not** currently install the full set of Istio CRDs that
 arbitrary user workloads may need — in particular, `EnvoyFilter`,
 `PeerAuthentication`, and `RequestAuthentication` are not always
 present out of the box. Without these CRDs, `helm install` of
-`llm-gateway-azure` fails because the chart's templates reference Kinds
+`llm-gateway-azureauth` fails because the chart's templates reference Kinds
 the API server does not know about.
 
 To keep the chart self-contained and installable on app-routing-enabled
@@ -35,5 +35,5 @@ version drift.
 CRDs were extracted verbatim from upstream Istio's
 `manifests/charts/base/files/crd-all.gen.yaml` (release-1.28). The
 upstream `helm.sh/resource-policy: keep` annotation is preserved so
-that uninstalling `llm-gateway-azure` does not remove CRDs that other
+that uninstalling `llm-gateway-azureauth` does not remove CRDs that other
 workloads may rely on.

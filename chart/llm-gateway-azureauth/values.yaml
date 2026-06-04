@@ -134,8 +134,8 @@ istio:
   injectAuthzSidecar: true
 
 # ── CRDs ──────────────────────────────────────────────────────────────────────
-# CRDs in chart/llm-gateway-azure/crds/ are installed on `helm install` and
-# never upgraded or deleted by Helm. See chart/llm-gateway-azure/crds/README.md
+# CRDs in chart/llm-gateway-azureauth/crds/ are installed on `helm install` and
+# never upgraded or deleted by Helm. See chart/llm-gateway-azureauth/crds/README.md
 # for the rationale.
 crds:
   install: true

@@ -3,21 +3,21 @@ Thank you for installing {{ .Chart.Name }} v{{ .Chart.Version }}!
 == Component Deployed ==
 
   azure-authz:
-    Deployment: {{ include "llm-gateway-azure.fullname" . }}-authz
-    Namespace:  {{ include "llm-gateway-azure.namespace" . }}
-    gRPC:       {{ include "llm-gateway-azure.fullname" . }}-authz.{{ include "llm-gateway-azure.namespace" . }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
+    Deployment: {{ include "llm-gateway-azureauth.fullname" . }}-authz
+    Namespace:  {{ include "llm-gateway-azureauth.namespace" . }}
+    gRPC:       {{ include "llm-gateway-azureauth.fullname" . }}-authz.{{ include "llm-gateway-azureauth.namespace" . }}.svc.cluster.local:{{ .Values.authz.grpcPort }}
 
 {{- if .Values.istio.enabled }}
 
 == Istio Integration ==
 
-  RequestAuthentication:     {{ include "llm-gateway-azure.fullname" . }}-entra-jwt (in {{ .Values.istio.gatewayNamespace }})
-  EnvoyFilter:               {{ include "llm-gateway-azure.fullname" . }}-ext-authz (in {{ .Values.istio.gatewayNamespace }})
+  RequestAuthentication:     {{ include "llm-gateway-azureauth.fullname" . }}-entra-jwt (in {{ .Values.istio.gatewayNamespace }})
+  EnvoyFilter:               {{ include "llm-gateway-azureauth.fullname" . }}-ext-authz (in {{ .Values.istio.gatewayNamespace }})
   ext_authz insert order:    {{ .Values.istio.extAuthzInsert.operation }}
   Strict mTLS:               {{ .Values.istio.strictMTLS }}
 
-  JWT issuer:                {{ include "llm-gateway-azure.jwt.issuer" . }}
-  JWKS URI:                  {{ include "llm-gateway-azure.jwt.jwksUri" . }}
+  JWT issuer:                {{ include "llm-gateway-azureauth.jwt.issuer" . }}
+  JWKS URI:                  {{ include "llm-gateway-azureauth.jwt.jwksUri" . }}
   Audiences:                 {{ join ", " .Values.azure.jwt.audiences }}
   Tenant ID:                 {{ .Values.azure.tenantId }}
 {{- end }}

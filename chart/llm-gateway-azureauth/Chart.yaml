@@ -1,5 +1,5 @@
 apiVersion: v2
-name: llm-gateway-azure
+name: llm-gateway-azureauth
 description: Azure Entra ID (RBAC) authentication for Kubernetes-native LLM gateways via Istio RequestAuthentication + ext_authz
 type: application
 version: 0.1.0

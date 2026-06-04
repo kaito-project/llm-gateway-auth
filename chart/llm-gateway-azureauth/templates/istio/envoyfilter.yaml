@@ -3,7 +3,7 @@
 {{- if not .Values.istio.gatewaySelector }}
 {{- fail "istio.gatewaySelector must not be empty when istio.enabled=true" }}
 {{- end }}
-{{- $svc := printf "%s-authz.%s.svc.cluster.local" (include "llm-gateway-azure.fullname" .) (include "llm-gateway-azure.namespace" .) -}}
+{{- $svc := printf "%s-authz.%s.svc.cluster.local" (include "llm-gateway-azureauth.fullname" .) (include "llm-gateway-azureauth.namespace" .) -}}
 {{- $cluster := printf "outbound|%d||%s" (int .Values.authz.grpcPort) $svc -}}
 # EnvoyFilter that inserts envoy.filters.http.ext_authz directly into the
 # ingress gateway HTTP filter chain, pointing at the azure-authz gRPC service.
@@ -15,10 +15,10 @@
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
-  name: {{ include "llm-gateway-azure.fullname" . }}-ext-authz
+  name: {{ include "llm-gateway-azureauth.fullname" . }}-ext-authz
   namespace: {{ $gwns }}
   labels:
-    {{- include "llm-gateway-azure.labels" . | nindent 4 }}
+    {{- include "llm-gateway-azureauth.labels" . | nindent 4 }}
 spec:
   workloadSelector:
     labels:

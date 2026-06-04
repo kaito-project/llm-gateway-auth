@@ -1,9 +1,9 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "llm-gateway-azure.fullname" . }}-authz
+  name: {{ include "llm-gateway-azureauth.fullname" . }}-authz
   labels:
-    {{- include "llm-gateway-azure.labels" . | nindent 4 }}
+    {{- include "llm-gateway-azureauth.labels" . | nindent 4 }}
 rules:
   # The azure-authz server submits a SubjectAccessReview per request to
   # evaluate whether the caller's Entra OID is permitted to perform the

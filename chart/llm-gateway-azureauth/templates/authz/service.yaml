@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "llm-gateway-azureauth.fullname" . }}-authz
+  namespace: {{ include "llm-gateway-azureauth.namespace" . }}
+  labels:
+    {{- include "llm-gateway-azureauth.labels" . | nindent 4 }}
+    {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.authz.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.authz.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  type: ClusterIP

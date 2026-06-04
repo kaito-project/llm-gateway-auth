@@ -1,22 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "llm-gateway-azure.fullname" . }}-authz
-  namespace: {{ include "llm-gateway-azure.namespace" . }}
+  name: {{ include "llm-gateway-azureauth.fullname" . }}-authz
+  namespace: {{ include "llm-gateway-azureauth.namespace" . }}
   labels:
-    {{- include "llm-gateway-azure.labels" . | nindent 4 }}
-    {{- include "llm-gateway-azure.authz.selectorLabels" . | nindent 4 }}
+    {{- include "llm-gateway-azureauth.labels" . | nindent 4 }}
+    {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.authz.replicaCount }}
   selector:
     matchLabels:
-      {{- include "llm-gateway-azure.authz.selectorLabels" . | nindent 6 }}
+      {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "llm-gateway-azure.authz.selectorLabels" . | nindent 8 }}
+        {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 8 }}
         {{- if and .Values.istio.enabled .Values.istio.injectAuthzSidecar }}
-        {{- include "llm-gateway-azure.istio.podLabels" .Values.istio | nindent 8 }}
+        {{- include "llm-gateway-azureauth.istio.podLabels" .Values.istio | nindent 8 }}
         {{- end }}
       annotations:
         prometheus.io/scrape: "true"
@@ -26,7 +26,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
-      serviceAccountName: {{ include "llm-gateway-azure.authz.serviceAccountName" . }}
+      serviceAccountName: {{ include "llm-gateway-azureauth.authz.serviceAccountName" . }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
