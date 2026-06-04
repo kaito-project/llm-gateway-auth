@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "llm-gateway-azureauth.fullname" . }}-authz
+  namespace: {{ include "llm-gateway-azureauth.namespace" . }}
+  labels:
+    {{- include "llm-gateway-azureauth.labels" . | nindent 4 }}
+    {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.authz.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 8 }}
+        {{- if and .Values.istio.enabled .Values.istio.injectAuthzSidecar }}
+        {{- include "llm-gateway-azureauth.istio.podLabels" .Values.istio | nindent 8 }}
+        {{- end }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.authz.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+        {{- with .Values.authz.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "llm-gateway-azureauth.authz.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.authz.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.authz.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.authz.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: authz
+          image: "{{ required "authz.image.repository is required" .Values.authz.image.repository }}:{{ .Values.authz.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.authz.image.pullPolicy | default .Values.global.imagePullPolicy }}
+          args:
+            - --grpc-addr=:{{ .Values.authz.grpcPort }}
+            - --metrics-addr=:{{ .Values.authz.metricsPort }}
+            - --sar-api-group={{ .Values.authz.sar.apiGroup }}
+            - --sar-resource={{ .Values.authz.sar.resource }}
+            - --sar-verb={{ .Values.authz.sar.verb }}
+            - --request-timeout={{ .Values.authz.requestTimeout }}
+            - --cache-size={{ .Values.authz.cache.size }}
+            - --cache-ttl={{ .Values.authz.cache.ttl }}
+            {{- if .Values.authz.failOpen }}
+            - --fail-open
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.authz.grpcPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.authz.metricsPort }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.authz.resources | nindent 12 }}
+          readinessProbe:
+            grpc:
+              port: {{ .Values.authz.grpcPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            grpc:
+              port: {{ .Values.authz.grpcPort }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

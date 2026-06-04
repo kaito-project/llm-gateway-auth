@@ -1,0 +1,35 @@
+{{- if and .Values.istio.enabled .Values.istio.gateway.enabled }}
+{{- $gwns := required "istio.gatewayNamespace is required when istio.gateway.enabled=true" .Values.istio.gatewayNamespace -}}
+{{- if not .Values.istio.gatewaySelector }}
+{{- fail "istio.gatewaySelector must not be empty when istio.gateway.enabled=true" }}
+{{- end }}
+# Fail-closed backstop for the gateway. Istiod injects istio.authorization
+# into the HCM filter chain whenever any AuthorizationPolicy selects the
+# workload, and it owns that filter's position — so this DENY rule fires
+# independently of the ext_authz EnvoyFilter's INSERT_AFTER anchor.
+#
+# notRequestPrincipals: ["*"] matches any request whose `requestPrincipals`
+# is empty. `requestPrincipals` is populated only when jwt_authn validates
+# a JWT (i.e. when the RequestAuthentication is materialized in the chain).
+# Effect: if jwt_authn is missing for any reason — install/upgrade race,
+# RequestAuthentication deleted at runtime, listener recomputed without it
+# — unauthenticated requests are rejected at the gateway rather than
+# passed through to the backend. This is purely a backstop; the SAR-based
+# authorization still runs via the ext_authz filter on validated requests.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "llm-gateway-azureauth.fullname" . }}-require-jwt
+  namespace: {{ $gwns }}
+  labels:
+    {{- include "llm-gateway-azureauth.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- toYaml .Values.istio.gatewaySelector | nindent 6 }}
+  action: DENY
+  rules:
+    - from:
+        - source:
+            notRequestPrincipals: ["*"]
+{{- end }}
