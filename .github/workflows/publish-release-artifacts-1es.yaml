@@ -17,7 +17,7 @@ on:
         description: 'Run Trivy CVE scan on built images'
         type: boolean
         required: false
-        default: false
+        default: true
 
 permissions:
   id-token: write
@@ -30,10 +30,9 @@ permissions:
 env:
   GO_VERSION: '1.25'
   GHCR_REGISTRY: ghcr.io
-  # Trivy scans are off by default for automatic triggers (release published).
-  # Enable per-run via the workflow_dispatch input.
-  # TODO: default to 'true' once the base-image CVE backlog is addressed.
-  ENABLE_TRIVY_SCAN: ${{ inputs.enable_trivy_scan || 'false' }}
+  # release events have no inputs → always scan.
+  # workflow_dispatch → honor the boolean input directly (uncheck the box to skip).
+  ENABLE_TRIVY_SCAN: ${{ github.event_name == 'release' || inputs.enable_trivy_scan }}
 
 jobs:
   check-tag:
