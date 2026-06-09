@@ -159,7 +159,3 @@ azureMonitor:
   podMonitor:
     enabled: false
     interval: 30s
-
-# ── CRD ───────────────────────────────────────────────────────────────────────
-crds:
-  install: true

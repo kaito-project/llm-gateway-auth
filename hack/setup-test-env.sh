@@ -431,11 +431,10 @@ build_and_load_images() {
 helm_install() {
   stage_begin "Deploying via Helm"
 
-  # Install the CRD separately so Helm does not try to adopt a pre-existing one
-  # (envtest or a previous kubectl apply may have already created it).
-  log "Applying CRD..."
-  kubectl apply -f "${REPO_ROOT}/config/crd/bases/"
-  ok "CRD applied."
+  # The APIKey CRD ships in chart/llm-gateway-apikey/crds/ and is installed
+  # automatically by `helm install` before any templates render. Helm's
+  # crds/ directory is create-only and idempotent: on a fresh cluster the
+  # CRD is created; on a reused cluster Helm leaves the existing CRD alone.
 
   # If the release already exists, upgrade it; otherwise install.
   if helm status "${RELEASE_NAME}" -n "${NAMESPACE}" &>/dev/null; then
@@ -450,7 +449,6 @@ helm_install() {
       --set istio.enabled=true \
       --set istio.gatewayNamespace=istio-system \
       --set istio.gatewaySelector.istio=ingressgateway \
-      --set crds.install=false \
       --set operator.replicaCount=1 \
       --set authz.replicaCount=1 \
       --wait --timeout 120s
@@ -467,7 +465,6 @@ helm_install() {
       --set istio.enabled=true \
       --set istio.gatewayNamespace=istio-system \
       --set istio.gatewaySelector.istio=ingressgateway \
-      --set crds.install=false \
       --set operator.replicaCount=1 \
       --set authz.replicaCount=1 \
       --wait --timeout 120s

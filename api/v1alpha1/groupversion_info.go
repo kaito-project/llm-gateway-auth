@@ -1,6 +1,7 @@
 // Package v1alpha1 contains API Schema definitions for the kaito.sh v1alpha1 API group.
 //
 // +kubebuilder:object:generate=true
+// +groupName=kaito.sh
 package v1alpha1
 
 import (

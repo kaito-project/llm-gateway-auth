@@ -18,8 +18,7 @@
 //	  --set authz.image.repository=localhost/apikey-authz \
 //	  --set authz.image.tag=latest \
 //	  --set global.imagePullPolicy=Never \
-//	  --set istio.enabled=false \
-//	  --set crds.install=false
+//	  --set istio.enabled=false
 //
 // Run with:
 //
