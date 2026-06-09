@@ -136,7 +136,3 @@ istio:
   # Inject Istio sidecar into the operator pod.
   # The authz pod always gets a sidecar (needed for mTLS).
   injectOperatorSidecar: false
-
-# ── CRD ───────────────────────────────────────────────────────────────────────
-crds:
-  install: true

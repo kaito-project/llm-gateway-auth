@@ -72,7 +72,7 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole, and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=chart/llm-gateway-apikey/crds
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -229,11 +229,11 @@ docker-push: image-push
 
 .PHONY: install
 install: ## Install CRDs into the cluster.
-	kubectl apply -f config/crd/
+	kubectl apply -f chart/llm-gateway-apikey/crds/kaito.sh_apikeys.yaml
 
 .PHONY: uninstall
 uninstall: ## Uninstall CRDs from the cluster.
-	kubectl delete -f config/crd/
+	kubectl delete -f chart/llm-gateway-apikey/crds/kaito.sh_apikeys.yaml
 
 .PHONY: deploy
 deploy: install ## Deploy controller to the cluster.

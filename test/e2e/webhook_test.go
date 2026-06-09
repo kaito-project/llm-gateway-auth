@@ -163,7 +163,10 @@ func TestMain(m *testing.M) {
 	}
 
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{"../../config/crd/bases"},
+		// Point at the specific CRD file rather than the chart's crds/
+		// directory, which also contains vendored Istio CRDs that envtest
+		// would try to parse alongside the README.
+		CRDDirectoryPaths:     []string{"../../chart/llm-gateway-apikey/crds/kaito.sh_apikeys.yaml"},
 		ErrorIfCRDPathMissing: true,
 		WebhookInstallOptions: webhookOpts,
 	}
