@@ -27,7 +27,7 @@ operator:
     repository: ""
     tag: ""               # Defaults to .Chart.AppVersion when empty.
     pullPolicy: ""        # Defaults to global.imagePullPolicy when empty.
-  replicaCount: 3
+  replicaCount: 2         # Leader-elected: 1 active + 1 warm standby for fast failover and webhook HA.
   resources:
     requests:
       cpu: 50m
