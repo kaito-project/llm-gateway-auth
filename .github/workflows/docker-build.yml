@@ -17,7 +17,7 @@ on:
         description: 'Run Trivy CVE scan on built images'
         type: boolean
         required: false
-        default: false
+        default: true
 
 # Cancel in-flight runs for the same PR to save runner minutes.
 concurrency:
@@ -28,10 +28,10 @@ permissions:
   contents: read
 
 env:
-  # Trivy scans are off by default for automatic triggers (pull_request, push).
-  # Enable per-run via the workflow_dispatch input.
-  # TODO: default to 'true' once the base-image CVE backlog is addressed.
-  ENABLE_TRIVY_SCAN: ${{ inputs.enable_trivy_scan || 'false' }}
+  # push to main → always scan (catch CVEs before a release tag is cut).
+  # pull_request → skip (keeps PR runs fast; release workflow is the real gate).
+  # workflow_dispatch → honor the boolean input directly (uncheck the box to skip).
+  ENABLE_TRIVY_SCAN: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.enable_trivy_scan) }}
 
 jobs:
   build:
