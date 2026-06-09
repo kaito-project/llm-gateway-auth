@@ -27,7 +27,7 @@ operator:
     repository: ""
     tag: ""               # Defaults to .Chart.AppVersion when empty.
     pullPolicy: ""        # Defaults to global.imagePullPolicy when empty.
-  replicaCount: 2
+  replicaCount: 2         # Leader-elected: 1 active + 1 warm standby for fast failover and webhook HA.
   resources:
     requests:
       cpu: 50m
@@ -43,6 +43,10 @@ operator:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Override the default soft topologySpreadConstraints (spread by hostname
+  # and zone with whenUnsatisfiable: ScheduleAnyway). Set to a non-empty list
+  # to fully replace the default; an empty list keeps the default.
+  topologySpreadConstraints: []
 
   # ── Leader Election ──
   leaderElection:
@@ -69,7 +73,7 @@ authz:
     repository: ""
     tag: ""
     pullPolicy: ""
-  replicaCount: 2         # >= 2 for high availability.
+  replicaCount: 3         # >= 2 for high availability.
   resources:
     requests:
       cpu: 50m
@@ -85,6 +89,10 @@ authz:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Override the default soft topologySpreadConstraints (spread by hostname
+  # and zone with whenUnsatisfiable: ScheduleAnyway). Set to a non-empty list
+  # to fully replace the default; an empty list keeps the default.
+  topologySpreadConstraints: []
 
   # Ports (match cmd/apikey-authz flag defaults).
   grpcPort: 9001
@@ -136,3 +144,18 @@ istio:
   # Inject Istio sidecar into the operator pod.
   # The authz pod always gets a sidecar (needed for mTLS).
   injectOperatorSidecar: false
+
+# ── Azure Monitor managed Prometheus (ama-metrics) ────────────────────────────
+# AKS-specific. The Azure Monitor metrics add-on installs CRDs under the
+# azmonitoring.coreos.com/v1 API group (a fork of the OSS prometheus-operator
+# CRDs with a different group name to avoid conflicts with OSS Prometheus).
+# These resources will fail to apply on clusters that don't have the add-on
+# installed — leave disabled on non-AKS clusters or when using OSS
+# prometheus-operator (rely on the prometheus.io/scrape pod annotations
+# instead, or add a standard monitoring.coreos.com/v1 PodMonitor).
+#
+# Docs: https://learn.microsoft.com/en-us/azure/azure-monitor/containers/prometheus-metrics-scrape-crd
+azureMonitor:
+  podMonitor:
+    enabled: false
+    interval: 30s

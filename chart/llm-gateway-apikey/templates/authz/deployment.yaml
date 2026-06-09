@@ -44,6 +44,12 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      topologySpreadConstraints:
+        {{- if .Values.authz.topologySpreadConstraints }}
+        {{- toYaml .Values.authz.topologySpreadConstraints | nindent 8 }}
+        {{- else }}
+        {{- include "llm-gateway-apikey.defaultTopologySpread" (include "llm-gateway-apikey.authz.selectorLabels" .) | nindent 8 }}
+        {{- end }}
       containers:
         - name: authz
           image: "{{ required "authz.image.repository is required" .Values.authz.image.repository }}:{{ .Values.authz.image.tag | default .Chart.AppVersion }}"
