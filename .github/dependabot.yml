@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    groups:
+      k8s:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      otel:
+        patterns:
+          - "go.opentelemetry.io/*"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Dockerfiles (root covers Dockerfile.apikey-authz, Dockerfile.apikey-operator, Dockerfile.azure-authz)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Helm chart
+  - package-ecosystem: "helm"
+    directory: "/chart"
+    schedule:
+      interval: "weekly"
