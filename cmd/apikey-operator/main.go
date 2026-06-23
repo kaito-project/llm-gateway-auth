@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -164,8 +165,18 @@ func main() {
 		ctrl.Log.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		ctrl.Log.Error(err, "unable to set up ready check")
+	// readyz reports unhealthy until the rotator-managed Secret contains a
+	// parseable serving cert. The webhook Service uses pod readiness to pick
+	// endpoints, so an unready follower is kept out of the round-robin until
+	// it can complete a TLS handshake — this closes the bootstrap window
+	// where the kube-apiserver could hit a cert-less pod and see a connection
+	// reset (issue #57).
+	readyzCheck := func(_ *http.Request) error {
+		_, err := loadCertificateFromSecret(secretLister, podNamespace, secretName)
+		return err
+	}
+	if err := mgr.AddReadyzCheck("webhook-cert", readyzCheck); err != nil {
+		ctrl.Log.Error(err, "unable to set up webhook-cert ready check")
 		os.Exit(1)
 	}
 
@@ -196,25 +207,29 @@ func newSecretLister(ctx context.Context, cfg *rest.Config, namespace string) (c
 
 // loadCertificateFromSecret reads tls.crt/tls.key out of the rotator-managed
 // Secret and returns them as a parsed TLS keypair. Called on every TLS
-// handshake so cert rotations are picked up without restarts or remounts.
+// handshake so cert rotations are picked up without restarts or remounts,
+// and from the readyz check below so the pod stays out of the Service
+// endpoints until a serving cert is loadable.
 //
-// Returning (nil, nil) when the Secret doesn't exist yet makes the TLS stack
-// surface "no certificates configured" to the client (kube-apiserver), which
-// will retry — preferable to a hard internal error during initial bootstrap.
+// All "Secret not yet populated" cases return a non-nil error. The readyz
+// check uses that signal to fail readiness; the TLS path turns it into a
+// handshake error, which is preferable to the silent (nil, nil) return that
+// used to surface as a connection reset on the kube-apiserver side during
+// the initial bootstrap window (issue #57).
 func loadCertificateFromSecret(lister corev1listers.SecretLister, namespace, name string) (*tls.Certificate, error) {
 	secret, err := lister.Secrets(namespace).Get(name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, nil //nolint:nilerr
+			return nil, fmt.Errorf("secret %s/%s not found yet", namespace, name)
 		}
 		return nil, fmt.Errorf("get secret %s/%s: %w", namespace, name, err)
 	}
 	crt, ok := secret.Data["tls.crt"]
-	if !ok {
+	if !ok || len(crt) == 0 {
 		return nil, fmt.Errorf("tls.crt missing from secret %s/%s", namespace, name)
 	}
 	key, ok := secret.Data["tls.key"]
-	if !ok {
+	if !ok || len(key) == 0 {
 		return nil, fmt.Errorf("tls.key missing from secret %s/%s", namespace, name)
 	}
 	pair, err := tls.X509KeyPair(crt, key)
