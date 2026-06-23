@@ -10,7 +10,7 @@ require (
 	github.com/open-policy-agent/cert-controller v0.16.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
-	go.uber.org/zap v1.27.0
+	go.uber.org/zap v1.28.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260330182312-d5a96adf58d8
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
