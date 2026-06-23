@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Load pinned versions from the single source of truth.
       # Makes KIND_VERSION, ISTIO_VERSION, GO_VERSION, etc. available to all steps.
@@ -38,7 +38,7 @@ jobs:
         run: grep -v '^\s*#' versions.env | grep -v '^\s*$' >> "$GITHUB_ENV"
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
