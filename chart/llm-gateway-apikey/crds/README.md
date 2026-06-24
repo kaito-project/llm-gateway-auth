@@ -1,9 +1,10 @@
 # CRDs shipped with the `llm-gateway-apikey` chart
 
-This directory contains every CustomResourceDefinition the chart needs to
-install cleanly. Helm processes files under `crds/` **before** any templates
-render, and never upgrades or deletes them — so it is the right place for
-CRDs that must exist before the chart's other resources are created.
+This directory contains the `APIKey` CustomResourceDefinition the chart
+needs to install cleanly. Helm processes files under `crds/` **before** any
+templates render, and never upgrades or deletes them — so it is the right
+place for CRDs that must exist before the chart's other resources are
+created.
 
 ## `kaito.sh_apikeys.yaml` — the APIKey CRD (canonical source)
 
@@ -49,44 +50,3 @@ kubectl annotate crd apikeys.kaito.sh helm.sh/resource-policy=keep
 ```
 
 After this annotation, Helm leaves the CRD alone and the upgrade succeeds.
-
----
-
-# Istio CRDs (temporary)
-
-This directory also ships Istio CRDs bundled with the `llm-gateway-apikey`
-chart so that the `EnvoyFilter` (networking.istio.io/v1alpha3) and
-`PeerAuthentication` (security.istio.io/v1) templates under
-`chart/llm-gateway-apikey/templates/istio/` can apply cleanly on AKS
-clusters that use the **Azure AKS application routing add-on**.
-
-## Why is this here?
-
-The AKS app routing add-on installs and manages Istio under the hood,
-but it does **not** currently install the full set of Istio CRDs that
-arbitrary user workloads may need — in particular, `EnvoyFilter` and
-`PeerAuthentication` are not always present out of
-the box. Without these CRDs, `helm install` of `llm-gateway-apikey`
-fails because the chart's templates reference Kinds the API server
-does not know about.
-
-To keep the chart self-contained and installable on app-routing-enabled
-clusters, we vendor the CRDs here. Helm installs files under `crds/`
-before any templates and never upgrades or deletes them, so this is
-safe to ship alongside a managed Istio control plane.
-
-## When can this be removed?
-
-Delete the Istio CRD files once the Azure AKS application routing add-on
-installs the required Istio CRDs (`EnvoyFilter`, `PeerAuthentication`,
-and anything else `llm-gateway-apikey` templates
-depend on) by default. At that point the managed control plane will own the
-CRD lifecycle and shipping our own copies risks version drift.
-
-## Source
-
-The Istio CRDs were extracted verbatim from upstream Istio's
-`manifests/charts/base/files/crd-all.gen.yaml` (release-1.28). The
-upstream `helm.sh/resource-policy: keep` annotation is preserved so
-that uninstalling `llm-gateway-apikey` does not remove CRDs that other
-workloads may rely on.
