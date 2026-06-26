@@ -19,6 +19,7 @@ RUN GOOS=linux go build \
 # binary that needs glibc at runtime. The "minimal" distroless image strips
 # glibc, so we use "base" (which includes glibc + libssl).
 FROM mcr.microsoft.com/azurelinux/distroless/base:3.0
+RUN tdnf upgrade -y && tdnf clean all
 COPY --from=builder /out/apikey-authz /apikey-authz
 USER 65532:65532
 EXPOSE 8082 8083 9001
