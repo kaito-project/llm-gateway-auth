@@ -83,4 +83,28 @@ spec:
             metadata_context_namespaces:
               {{- toYaml . | nindent 14 }}
             {{- end }}
+    {{- if .Values.istio.extAuthzPerRoute.enabled }}
+    # Per-virtual-host ExtAuthzPerRoute override that hands apikey-authz
+    # the workload namespace via `context_extensions[gateway-namespace]`.
+    # Without it, apikey-authz falls back to deriving the namespace from
+    # the first DNS label of the request's :authority/Host, which fails
+    # for client-facing FQDNs that do not encode the namespace (e.g.
+    # `localhost` during port-forward, or any front-door / public host)
+    # and returns 403 `cannot determine gateway namespace`. The MERGE
+    # operation grafts `typed_per_filter_config` onto every auto-generated
+    # virtual host on this Gateway, so the override is unconditional and
+    # the operator never has to parse Host headers.
+    - applyTo: VIRTUAL_HOST
+      match:
+        context: GATEWAY
+      patch:
+        operation: MERGE
+        value:
+          typed_per_filter_config:
+            envoy.filters.http.ext_authz:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+              check_settings:
+                context_extensions:
+                  gateway-namespace: {{ include "llm-gateway-apikey.namespace" . | quote }}
+    {{- end }}
 {{- end }}
