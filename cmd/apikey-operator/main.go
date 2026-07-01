@@ -13,13 +13,13 @@ import (
 	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	corev1listers "k8s.io/client-go/listers/core/v1"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -89,13 +89,36 @@ func main() {
 	// every TLS handshake. This avoids the kubelet projected-Secret refresh
 	// lag and removes the need for an on-disk cert mount.
 	signalCtx := ctrl.SetupSignalHandler()
-	secretLister, err := newSecretLister(signalCtx, ctrl.GetConfigOrDie(), podNamespace)
+	restCfg := ctrl.GetConfigOrDie()
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		ctrl.Log.Error(err, "unable to build kubernetes clientset")
+		os.Exit(1)
+	}
+
+	// Pre-create the rotator-managed Secret before starting the manager.
+	// cert-controller's startup refreshCertIfNeeded does a Get() and returns
+	// an error on NotFound, which propagates out of mgr.Start() and terminates
+	// the process. The chart ships a placeholder Secret to cover the
+	// first-install case, but if the Secret is deleted at runtime (GitOps
+	// drift, accidental kubectl delete, RBAC misconfiguration) the next pod
+	// restart crash-loops until something recreates it. Creating it here makes
+	// the operator self-healing: both replicas race on Create, one wins and
+	// the other gets AlreadyExists — no leader-election dependency, which is
+	// correct because TLS bootstrap must happen before leader election
+	// completes.
+	if err := ensureWebhookSecret(signalCtx, clientset, podNamespace, secretName); err != nil {
+		ctrl.Log.Error(err, "unable to ensure webhook TLS secret exists", "namespace", podNamespace, "name", secretName)
+		os.Exit(1)
+	}
+
+	secretLister, err := newSecretLister(signalCtx, clientset, podNamespace)
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start secret lister for webhook TLS")
 		os.Exit(1)
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
@@ -190,11 +213,7 @@ func main() {
 // newSecretLister starts a namespace-scoped Secret informer and returns a
 // lister once the cache has synced. The webhook TLS GetCertificate callback
 // reads from this lister on every handshake.
-func newSecretLister(ctx context.Context, cfg *rest.Config, namespace string) (corev1listers.SecretLister, error) {
-	clientset, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
+func newSecretLister(ctx context.Context, clientset kubernetes.Interface, namespace string) (corev1listers.SecretLister, error) {
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 24*time.Hour, informers.WithNamespace(namespace))
 	informer := factory.Core().V1().Secrets().Informer()
 	lister := factory.Core().V1().Secrets().Lister()
@@ -203,6 +222,30 @@ func newSecretLister(ctx context.Context, cfg *rest.Config, namespace string) (c
 		return nil, errors.New("failed waiting for webhook secret cache to sync")
 	}
 	return lister, nil
+}
+
+// ensureWebhookSecret idempotently creates an empty placeholder Secret so
+// cert-controller's startup refreshCertIfNeeded finds an existing object to
+// Update() rather than surfacing NotFound and killing the manager. If the
+// Secret already exists — either populated by a previous rotator run or
+// pre-created by another replica racing us here — the AlreadyExists response
+// is treated as success and any populated fields are left untouched.
+//
+// This runs before leader election on purpose: the follower still needs to
+// serve TLS during the bootstrap window, and cert-controller's startup path
+// runs on both replicas regardless of who holds the lease.
+func ensureWebhookSecret(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error {
+	_, err := clientset.CoreV1().Secrets(namespace).Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Type: corev1.SecretTypeOpaque,
+	}, metav1.CreateOptions{})
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create webhook TLS secret %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // loadCertificateFromSecret reads tls.crt/tls.key out of the rotator-managed
