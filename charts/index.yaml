@@ -3,10 +3,10 @@ entries:
   llm-gateway-apikey:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-07-17T02:11:24.626078144Z"
+    created: "2026-07-22T04:31:07.826419523Z"
     description: API key authentication for Kubernetes-native LLM gateways via Istio
       ext_authz
-    digest: 4552875f528275db028caccfb8a422223a915ede2f6250c4015f88e1859ac023
+    digest: a84876858fb82a508d6e7f9cfe07ca11c9b9f828e4f54cc9ac9a430b6b7a685b
     keywords:
     - llm
     - gateway
@@ -24,10 +24,10 @@ entries:
   llm-gateway-azureauth:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-07-17T02:11:24.626928584Z"
+    created: "2026-07-22T04:31:07.82727282Z"
     description: Azure Entra ID (RBAC) authentication for Kubernetes-native LLM gateways
       via Istio RequestAuthentication + ext_authz
-    digest: b78f6dac160eb78162d7f74d94a9281642424f44683ce9e623006bd8d9c88492
+    digest: fcd1f22390fd7c3a4d5309cfaa4132eea8e279a28f463d39ed8520971deba7c7
     keywords:
     - llm
     - gateway
@@ -44,4 +44,4 @@ entries:
     urls:
     - https://kaito-project.github.io/llm-gateway-auth/charts/llm-gateway-azureauth-0.1.0.tgz
     version: 0.1.0
-generated: "2026-07-17T02:11:24.624314584Z"
+generated: "2026-07-22T04:31:07.825272208Z"
