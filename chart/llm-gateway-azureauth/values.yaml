@@ -52,7 +52,7 @@ authz:
   # check of the form: "can <user> <verb> <group>/<resource> in <namespace>?"
   # The namespace is extracted from the first subdomain of the Host header.
   sar:
-    apiGroup: aimanager
+    apiGroup: ""
     resource: namespaces
     verb: inference
 
