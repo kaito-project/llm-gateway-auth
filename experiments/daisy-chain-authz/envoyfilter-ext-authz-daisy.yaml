@@ -1,0 +1,151 @@
+# Daisy-chained ext_authz EnvoyFilter.
+#
+# Adapted from https://github.com/kaito-project/production-stack/blob/main/
+#              charts/modelharness/templates/envoyfilter-ext-authz.yaml
+#
+# Chain order in the ingress gateway HTTP filter list (INSERT_FIRST reverses
+# insertion order, so we insert in reverse: azure, apikey, lua).
+#
+#   1. envoy.filters.http.lua          — classifier: inspects Authorization
+#                                        header and sets dynamic metadata
+#                                        envoy.filters.http.lua.auth_mode
+#                                        = "apikey"  when token begins "sk-"
+#                                        = "azure"   otherwise (incl. missing)
+#
+#   2. envoy.filters.http.ext_authz    — apikey-authz. filter_enabled_metadata
+#      (name = ext_authz.apikey)         gates it to auth_mode == "apikey".
+#                                        On allow it returns 200; the request
+#                                        then falls through to the router and
+#                                        the azure ext_authz is SKIPPED because
+#                                        its gate does not match.
+#
+#   3. envoy.filters.http.ext_authz    — azure-authz. filter_enabled_metadata
+#      (name = ext_authz.azure)          gates it to auth_mode == "azure".
+#
+# Both ext_authz filters share the same context_extensions[gateway-namespace]
+# override so apikey-authz can namespace-authorize without parsing Host.
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: ext-authz-daisychain
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      app: istio-ingressgateway
+  configPatches:
+    # ── 1. azure ext_authz: INSERT_AFTER jwt_authn so the JWT validated by
+    #      RequestAuthentication is available in filter metadata under
+    #      "envoy.filters.http.jwt_authn".
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+              subFilter:
+                name: envoy.filters.http.jwt_authn
+      patch:
+        operation: INSERT_AFTER
+        value:
+          name: ext_authz.azure
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+            transport_api_version: V3
+            grpc_service:
+              envoy_grpc:
+                cluster_name: outbound|9001||azure-authz.llm-gateway.svc.cluster.local
+                authority: azure-authz.llm-gateway.svc.cluster.local
+              timeout: 5s
+            # Forward jwt_authn's validated-claims metadata to azure-authz.
+            metadata_context_namespaces:
+              - envoy.filters.http.jwt_authn
+            # Only run when the Lua classifier decided this is the azure path.
+            filter_enabled_metadata:
+              filter: envoy.filters.http.lua
+              path:
+                - key: auth_mode
+              value:
+                string_match:
+                  exact: azure
+
+    # ── 2. Insert apikey ext_authz FIRST ──
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: ext_authz.apikey
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+            transport_api_version: V3
+            grpc_service:
+              envoy_grpc:
+                cluster_name: outbound|9001||apikey-authz.llm-gateway.svc.cluster.local
+                authority: apikey-authz.llm-gateway.svc.cluster.local
+              timeout: 5s
+            # Only run when the Lua classifier saw an "sk-" prefixed key.
+            filter_enabled_metadata:
+              filter: envoy.filters.http.lua
+              path:
+                - key: auth_mode
+              value:
+                string_match:
+                  exact: apikey
+
+    # ── 3. Insert Lua classifier FIRST — ends up at the head of the chain ──
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: envoy.filters.http.lua
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            default_source_code:
+              inline_string: |
+                -- Classify each request into one of two authz backends based on
+                -- the shape of the token in the Authorization header:
+                --   1. Strip an optional case-insensitive "Bearer " prefix.
+                --   2. If what remains starts with "sk-", route to apikey.
+                --   3. Otherwise, route to azure (JWT / RBAC path).
+                function envoy_on_request(handle)
+                  local auth = handle:headers():get("authorization") or ""
+                  -- Lua patterns have no (?i), so spell each letter as a class.
+                  -- %s+ tolerates one or more separator chars between scheme and token.
+                  -- Falls back to the raw header if no Bearer prefix is present.
+                  local token = auth:match("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+(.*)$") or auth
+                  local mode = token:sub(1, 3) == "sk-" and "apikey" or "azure"
+                  handle:streamInfo():dynamicMetadata():set(
+                    "envoy.filters.http.lua", "auth_mode", mode)
+                end
+
+    # ── Per-VHost: hand both ext_authz filters the tenant namespace explicitly ──
+    - applyTo: VIRTUAL_HOST
+      match:
+        context: GATEWAY
+      patch:
+        operation: MERGE
+        value:
+          typed_per_filter_config:
+            ext_authz.apikey:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+              check_settings:
+                context_extensions:
+                  gateway-namespace: tenant-a
+            ext_authz.azure:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+              check_settings:
+                context_extensions:
+                  gateway-namespace: tenant-a
