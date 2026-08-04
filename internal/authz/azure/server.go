@@ -82,9 +82,18 @@ func (s *AuthorizationServer) Check(ctx context.Context, req *authv3.CheckReques
 	// Step 2: Map claims to Kubernetes subjects.
 	user, groups, extra := toKubernetesSubject(claims)
 
-	// Step 3: Build access request.
-	namespace := authz.NamespaceFromHost(httpReq.GetHost())
-	accessReq := buildAccessRequest(user, groups, extra, httpReq, s.cfg)
+	// Step 3: Resolve the gateway namespace.
+	// Prefer the value supplied by Envoy via ExtAuthzPerRoute context_extensions
+	// ("gateway-namespace"): it comes from the data plane's own configuration and,
+	// unlike the Host header, cannot be forged by the client. Fall back to the
+	// Host-derived value for gateways that predate the per-route config.
+	namespaceSource := "context-extension"
+	namespace := req.GetAttributes().GetContextExtensions()["gateway-namespace"]
+	if namespace == "" {
+		namespace = authz.NamespaceFromHost(httpReq.GetHost())
+		namespaceSource = "host"
+	}
+	accessReq := buildAccessRequest(user, groups, extra, namespace, httpReq, s.cfg)
 
 	// Step 4: SubjectAccessReview (with cache).
 	decision, err := s.checker.Check(ctx, accessReq)
@@ -112,26 +121,25 @@ func (s *AuthorizationServer) Check(ctx context.Context, req *authv3.CheckReques
 	if reason == "" {
 		reason = "access denied"
 	}
-	s.logger.Info("request denied", "user", user, "path", httpReq.GetPath(), "reason", reason)
+	s.logger.Info("request denied", "user", user, "path", httpReq.GetPath(), "reason", reason, "namespace", namespace, "namespace-source", namespaceSource)
 	s.metrics.requestDuration.WithLabelValues("deny").Observe(time.Since(start).Seconds())
 	return denied(typev3.StatusCode_Forbidden, reason), nil
 }
 
 // buildAccessRequest maps the HTTP request attributes to a Kubernetes
-// SubjectAccessReview with ResourceAttributes. The target namespace is
-// extracted from the first subdomain of the Host header
-// (e.g. "team-alpha.manager-instance-xx.example.com" → namespace "team-alpha").
+// SubjectAccessReview with ResourceAttributes. The target namespace must be
+// resolved by the caller (see Check for the resolution logic — context_extensions
+// takes priority over the Host header).
 // The verb is taken from configuration (e.g. "inference") rather than
 // mapped from the HTTP method.
 func buildAccessRequest(
 	user string,
 	groups []string,
 	extra map[string]authorizationv1.ExtraValue,
+	namespace string,
 	httpReq *authv3.AttributeContext_HttpRequest,
 	cfg *Config,
 ) *AccessRequest {
-	namespace := authz.NamespaceFromHost(httpReq.GetHost())
-
 	return &AccessRequest{
 		User:   user,
 		Groups: groups,
