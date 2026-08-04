@@ -209,3 +209,99 @@ func (c *capturingChecker) Check(ctx context.Context, req *AccessRequest) (*Acce
 	*c.captured = req
 	return c.delegate.Check(ctx, req)
 }
+
+// withContextExtensions sets context_extensions on a CheckRequest in-place and
+// returns it, allowing use as a fluent helper in tests.
+func withContextExtensions(req *authv3.CheckRequest, ext map[string]string) *authv3.CheckRequest {
+	req.Attributes.ContextExtensions = ext
+	return req
+}
+
+// TestCheck_NamespaceFromContextExtensions_Used verifies that when
+// context_extensions["gateway-namespace"] is present, it is preferred over
+// the Host-derived value for both the SAR namespace and the forwarded header.
+func TestCheck_NamespaceFromContextExtensions_Used(t *testing.T) {
+	t.Parallel()
+	var capturedReq *AccessRequest
+	mock := &mockChecker{decision: &AccessDecision{Allowed: true}}
+	wrapper := &capturingChecker{delegate: mock, captured: &capturedReq}
+	srv := newTestServer(t, wrapper, testConfig())
+
+	// Host subdomain would give "host-namespace"; context_extensions should win.
+	req := withContextExtensions(
+		buildCheckRequest(t, testClaims, "host-namespace.mgr.example.com", "POST", "/v1/chat/completions"),
+		map[string]string{"gateway-namespace": "ext-namespace"},
+	)
+	resp, err := srv.Check(context.Background(), req)
+	require.NoError(t, err)
+
+	// Namespace in SAR must come from context_extensions, not from the Host header.
+	require.NotNil(t, capturedReq)
+	assert.Equal(t, "ext-namespace", capturedReq.ResourceAttributes.Namespace)
+
+	// x-tenant-namespace forwarded header must reflect the same resolved namespace.
+	okResp := resp.GetOkResponse()
+	require.NotNil(t, okResp, "expected OkResponse")
+	headerMap := map[string]string{}
+	for _, h := range okResp.GetHeaders() {
+		headerMap[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+	}
+	assert.Equal(t, "ext-namespace", headerMap["x-tenant-namespace"])
+}
+
+// TestCheck_NamespaceFromContextExtensions_AbsentFallsBackToHost verifies that
+// when context_extensions contains no "gateway-namespace" key, the server falls
+// back to extracting the namespace from the Host header.
+func TestCheck_NamespaceFromContextExtensions_AbsentFallsBackToHost(t *testing.T) {
+	t.Parallel()
+	var capturedReq *AccessRequest
+	mock := &mockChecker{decision: &AccessDecision{Allowed: true}}
+	wrapper := &capturingChecker{delegate: mock, captured: &capturedReq}
+	srv := newTestServer(t, wrapper, testConfig())
+
+	// No context_extensions set; Host gives "fallback-ns".
+	req := buildCheckRequest(t, testClaims, "fallback-ns.mgr.example.com", "POST", "/v1/chat/completions")
+	resp, err := srv.Check(context.Background(), req)
+	require.NoError(t, err)
+
+	require.NotNil(t, capturedReq)
+	assert.Equal(t, "fallback-ns", capturedReq.ResourceAttributes.Namespace)
+
+	okResp := resp.GetOkResponse()
+	require.NotNil(t, okResp, "expected OkResponse")
+	headerMap := map[string]string{}
+	for _, h := range okResp.GetHeaders() {
+		headerMap[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+	}
+	assert.Equal(t, "fallback-ns", headerMap["x-tenant-namespace"])
+}
+
+// TestCheck_NamespaceFromContextExtensions_EmptyFallsBackToHost verifies that
+// when context_extensions["gateway-namespace"] is present but empty, it is
+// treated as absent and the server falls back to the Host-derived value.
+func TestCheck_NamespaceFromContextExtensions_EmptyFallsBackToHost(t *testing.T) {
+	t.Parallel()
+	var capturedReq *AccessRequest
+	mock := &mockChecker{decision: &AccessDecision{Allowed: true}}
+	wrapper := &capturingChecker{delegate: mock, captured: &capturedReq}
+	srv := newTestServer(t, wrapper, testConfig())
+
+	// context_extensions["gateway-namespace"] is explicitly empty; Host wins.
+	req := withContextExtensions(
+		buildCheckRequest(t, testClaims, "fallback-ns.mgr.example.com", "POST", "/v1/chat/completions"),
+		map[string]string{"gateway-namespace": ""},
+	)
+	resp, err := srv.Check(context.Background(), req)
+	require.NoError(t, err)
+
+	require.NotNil(t, capturedReq)
+	assert.Equal(t, "fallback-ns", capturedReq.ResourceAttributes.Namespace)
+
+	okResp := resp.GetOkResponse()
+	require.NotNil(t, okResp, "expected OkResponse")
+	headerMap := map[string]string{}
+	for _, h := range okResp.GetHeaders() {
+		headerMap[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+	}
+	assert.Equal(t, "fallback-ns", headerMap["x-tenant-namespace"])
+}
