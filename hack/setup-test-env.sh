@@ -431,10 +431,26 @@ build_and_load_images() {
 helm_install() {
   stage_begin "Deploying via Helm"
 
-  # The APIKey CRD ships in chart/llm-gateway-apikey/crds/ and is installed
-  # automatically by `helm install` before any templates render. Helm's
-  # crds/ directory is create-only and idempotent: on a fresh cluster the
-  # CRD is created; on a reused cluster Helm leaves the existing CRD alone.
+  # The APIKey CRD ships as a chart template (see
+  # chart/llm-gateway-apikey/crds/README.md), so Helm owns it and applies
+  # schema changes on upgrade.
+  #
+  # On a cluster where a previous run installed the CRD from the chart's
+  # crds/ directory, the CRD carries no Helm ownership metadata and the
+  # upgrade below would fail with "invalid ownership metadata". Stamp it so
+  # reused clusters can adopt the CRD into the release.
+  if kubectl get crd apikeys.kaito.sh &>/dev/null; then
+    if [[ "$(kubectl get crd apikeys.kaito.sh \
+        -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')" != "Helm" ]]; then
+      log "Adopting pre-existing APIKey CRD into the Helm release..."
+      kubectl label crd apikeys.kaito.sh \
+        app.kubernetes.io/managed-by=Helm --overwrite >/dev/null
+      kubectl annotate crd apikeys.kaito.sh \
+        "meta.helm.sh/release-name=${RELEASE_NAME}" \
+        "meta.helm.sh/release-namespace=${NAMESPACE}" --overwrite >/dev/null
+      ok "CRD adopted."
+    fi
+  fi
 
   # If the release already exists, upgrade it; otherwise install.
   if helm status "${RELEASE_NAME}" -n "${NAMESPACE}" &>/dev/null; then

@@ -163,10 +163,12 @@ func TestMain(m *testing.M) {
 	}
 
 	testEnv = &envtest.Environment{
-		// Point at the specific CRD file rather than the chart's crds/
-		// directory, which also contains vendored Istio CRDs that envtest
-		// would try to parse alongside the README.
-		CRDDirectoryPaths:     []string{"../../chart/llm-gateway-apikey/crds/kaito.sh_apikeys.yaml"},
+		// Point at the specific CRD file rather than a whole directory, which
+		// would make envtest try to parse every other manifest alongside it.
+		// The APIKey CRD lives in templates/ (see chart/llm-gateway-apikey/
+		// crds/README.md) but is plain controller-gen output with no Go
+		// template actions, so envtest can read it directly.
+		CRDDirectoryPaths:     []string{"../../chart/llm-gateway-apikey/templates/kaito.sh_apikeys.yaml"},
 		ErrorIfCRDPathMissing: true,
 		WebhookInstallOptions: webhookOpts,
 	}
