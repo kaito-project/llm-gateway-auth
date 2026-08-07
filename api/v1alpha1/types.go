@@ -110,6 +110,10 @@ type APIKeyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// The CRD ships in the chart's templates/ so that `helm upgrade` can apply schema
+// changes; resource-policy=keep stops `helm uninstall` from taking the CRD — and
+// every APIKey in the cluster — down with the release.
+// +kubebuilder:metadata:annotations="helm.sh/resource-policy=keep"
 // +kubebuilder:printcolumn:name="KeyID",type=string,JSONPath=`.status.primaryKey.keyID`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="ExpiresAt",type=string,JSONPath=`.status.primaryKey.expiresAt`
