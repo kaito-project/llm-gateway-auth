@@ -39,7 +39,10 @@ See [docs/architecture.md](docs/architecture.md) for the full cluster topology i
 - Go 1.25+
 - `kubectl`, `helm`, `kind` (for local testing)
 - Docker or Podman
-- An Istio-enabled Kubernetes cluster for end-to-end deployment
+- An Istio-enabled Kubernetes cluster for end-to-end deployment. The charts do
+  not bundle Istio CRDs — `EnvoyFilter`, `PeerAuthentication`,
+  `RequestAuthentication`, and `AuthorizationPolicy` must already be
+  registered, or `helm install` fails on unknown Kinds.
 
 ### Build
 

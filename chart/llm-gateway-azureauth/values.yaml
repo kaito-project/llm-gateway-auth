@@ -150,10 +150,3 @@ istio:
 
   # Inject Istio sidecar into the authz pod.
   injectAuthzSidecar: true
-
-# ── CRDs ──────────────────────────────────────────────────────────────────────
-# CRDs in chart/llm-gateway-azureauth/crds/ are installed on `helm install` and
-# never upgraded or deleted by Helm. See chart/llm-gateway-azureauth/crds/README.md
-# for the rationale.
-crds:
-  install: true

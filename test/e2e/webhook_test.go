@@ -166,7 +166,7 @@ func TestMain(m *testing.M) {
 		// Point at the specific CRD file rather than a whole directory, which
 		// would make envtest try to parse every other manifest alongside it.
 		// The APIKey CRD lives in templates/ (see chart/llm-gateway-apikey/
-		// crds/README.md) but is plain controller-gen output with no Go
+		// README.md) but is plain controller-gen output with no Go
 		// template actions, so envtest can read it directly.
 		CRDDirectoryPaths:     []string{"../../chart/llm-gateway-apikey/templates/kaito.sh_apikeys.yaml"},
 		ErrorIfCRDPathMissing: true,

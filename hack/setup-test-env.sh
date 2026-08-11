@@ -432,7 +432,7 @@ helm_install() {
   stage_begin "Deploying via Helm"
 
   # The APIKey CRD ships as a chart template (see
-  # chart/llm-gateway-apikey/crds/README.md), so Helm owns it and applies
+  # chart/llm-gateway-apikey/README.md), so Helm owns it and applies
   # schema changes on upgrade.
   #
   # On a cluster where a previous run installed the CRD from the chart's
