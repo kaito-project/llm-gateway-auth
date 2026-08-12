@@ -1,3 +1,5 @@
-tnsimon
-zhuangqh
-andyzhangx
+# These owners are the default reviewers for everything in this repository.
+# Order matters: the last matching pattern takes precedence.
+# See https://docs.github.com/articles/about-code-owners
+
+* @tnsimon @zhuangqh @andyzhangx
