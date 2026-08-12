@@ -76,7 +76,7 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole, and Cus
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object paths="./api/..." output:object:dir=api/v1alpha1
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..." output:object:dir=api/v1alpha1
 
 ## --------------------------------------
 ## Linting

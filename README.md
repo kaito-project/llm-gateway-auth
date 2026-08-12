@@ -1,6 +1,7 @@
 # LLM Gateway Auth
 
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/kaito-project/llm-gateway-auth)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 `llm-gateway-auth` provides authentication and authorization components for an LLM inference gateway built on Istio + Kubernetes Gateway API + [Gateway API Inference Extension](https://gateway-api-inference-extension.sigs.k8s.io/) (InferencePool / InferenceModel). It is part of the [KAITO](https://github.com/kaito-project/kaito) project family.
 
@@ -73,7 +74,7 @@ This project welcomes contributions and suggestions. Contributions require you t
 
 ## License
 
-TODO
+See [Apache License 2.0](LICENSE).
 
 ## Code of Conduct
 
