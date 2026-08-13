@@ -15,6 +15,7 @@ cover.out
 *.swo
 *~
 .vscode/
+.claude/
 
 # OS
 .DS_Store

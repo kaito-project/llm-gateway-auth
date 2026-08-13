@@ -1,3 +1,16 @@
+// Copyright (c) KAITO authors.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package controller
 
 import (
@@ -441,17 +454,16 @@ func TestReconcile_SecretConflictNotOwned(t *testing.T) {
 	assert.Equal(t, v1alpha1.PhasePending, updated.Status.Phase)
 }
 
-func TestGracePeriod_DefaultNeverExpires(t *testing.T) {
+func TestGracePeriod_Default(t *testing.T) {
 	r := &APIKeyReconciler{}
 
-	// No rotation config => default grace period should be effectively infinite.
+	// No rotation config => the 24h default applies. Asserted against the
+	// literal so a change to the constant has to be made deliberately.
 	apiKey := &v1alpha1.APIKey{
 		Spec: v1alpha1.APIKeySpec{Prefix: "sk-"},
 	}
-	got := r.gracePeriod(apiKey)
-	assert.Equal(t, v1alpha1.DefaultGracePeriod, got)
-	assert.True(t, time.Now().Add(got).After(time.Now().Add(100*365*24*time.Hour)),
-		"default grace period should effectively never expire")
+	assert.Equal(t, 24*time.Hour, v1alpha1.DefaultGracePeriod)
+	assert.Equal(t, v1alpha1.DefaultGracePeriod, r.gracePeriod(apiKey))
 
 	// Empty rotation struct (no GracePeriod set) => still default.
 	apiKey.Spec.Rotation = &v1alpha1.RotationSpec{}
@@ -466,7 +478,7 @@ func TestGracePeriod_DefaultNeverExpires(t *testing.T) {
 	assert.Equal(t, 30*time.Minute, r.gracePeriod(apiKey))
 }
 
-func TestReconcile_SecondaryKeyPersistsWithDefaultGracePeriod(t *testing.T) {
+func TestReconcile_SecondaryKeyPersistsWithinDefaultGracePeriod(t *testing.T) {
 	s := setupScheme()
 	apiKey := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{
@@ -492,10 +504,15 @@ func TestReconcile_SecondaryKeyPersistsWithDefaultGracePeriod(t *testing.T) {
 		types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated))
 	require.NotNil(t, updated.Status.Secondary, "expected secondary key to be set on creation")
 	require.NotNil(t, updated.Status.Secondary.ExpiresAt, "expected secondary.expiresAt to be set")
-	assert.True(t, updated.Status.Secondary.ExpiresAt.After(time.Now().Add(100*365*24*time.Hour)),
-		"expected secondary.expiresAt to effectively never expire by default")
+	// The secondary generated at creation expires one grace period out, so a
+	// key that is never rotated loses its secondary after 24h. See the
+	// spec.rotation.gracePeriod field docs.
+	assert.WithinDuration(t, time.Now().Add(v1alpha1.DefaultGracePeriod),
+		updated.Status.Secondary.ExpiresAt.Time, time.Minute,
+		"expected secondary.expiresAt one default grace period from creation")
 
-	// Second reconcile: secondary key must NOT be cleaned up.
+	// Second reconcile, still well within the grace period: the secondary key
+	// must NOT be cleaned up.
 	_, err = r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})

@@ -1,0 +1,57 @@
+name: License Header
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: license-header-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check Go file headers
+        run: |
+          boilerplate_file="hack/boilerplate.go.txt"
+          boilerplate_content=$(cat "$boilerplate_file")
+          boilerplate_lines=$(grep -c '^' "$boilerplate_file")
+
+          exit_code=0
+
+          # Generated deepcopy files carry the header below their //go:build
+          # constraint (controller-gen emits it that way), so they are checked
+          # separately rather than with a strict head-of-file comparison.
+          while IFS= read -r file; do
+            case "$file" in
+              *.deepcopy.go)
+                if ! grep -qF "$boilerplate_content" "$file"; then
+                  echo "::error file=$file::Generated file '$file' is missing the boilerplate header. Run 'make generate'."
+                  exit_code=1
+                fi
+                continue
+                ;;
+            esac
+
+            header=$(head -n "$boilerplate_lines" "$file")
+            if [ "$header" != "$boilerplate_content" ]; then
+              echo "::error file=$file::File '$file' is missing or has an incorrect boilerplate header."
+              exit_code=1
+            fi
+          done < <(git ls-files '*.go')
+
+          if [ $exit_code -ne 0 ]; then
+            echo "Please add the contents of '$boilerplate_file' to the top of the listed files."
+          else
+            echo "Boilerplate check passed for all Go files."
+          fi
+          exit $exit_code

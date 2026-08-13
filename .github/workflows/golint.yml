@@ -18,16 +18,20 @@ jobs:
     name: golangci-lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      # Load pinned versions from the single source of truth.
+      - name: Load versions from versions.env
+        run: grep -v '^\s*#' versions.env | grep -v '^\s*$' >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
       - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@0a35821d5c230e903fcfe077583637dea1b27b47 # v9.0.0
         with:
-          version: latest
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
           args: ""
           install-only: true
 
