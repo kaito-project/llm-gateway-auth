@@ -58,6 +58,11 @@ type RotationSpec struct {
 	// GracePeriod is the duration for which the secondary key remains valid after rotation.
 	// Uses Go duration format (e.g. "24h", "168h" for 7 days).
 	// Defaults to "24h".
+	//
+	// This also bounds the secondary key generated when the APIKey is first
+	// created: that key is removed one grace period after creation even if no
+	// rotation has occurred. Raise this value to keep a standby key available
+	// for longer on keys that are rotated infrequently.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == '' || self.matches('^([0-9]+(h|m|s))+$')",message="must be a valid Go duration (e.g. 720h, 30m, 1h30m)"
 	GracePeriod string `json:"gracePeriod,omitempty"`
