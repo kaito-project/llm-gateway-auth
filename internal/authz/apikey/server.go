@@ -32,6 +32,11 @@ import (
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
+const (
+	authorizationHeader = "Authorization"
+	xAPIKeyHeader       = "X-API-Key"
+)
+
 var (
 	checkDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "apikey_authz_check_duration_seconds",
@@ -78,22 +83,24 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 			"cannot determine gateway namespace: set context_extensions[gateway-namespace] or use subdomain-based host"), nil
 	}
 
-	// 1. Extract Authorization header
-	authHeader := headers["authorization"]
-	rawKey := extractKey(authHeader)
-	if rawKey == "" {
+	// 1. Extract the API key. X-API-Key takes precedence when both headers are present.
+	key, credentialHeader := apiKeyFromHeaders(headers)
+	if key == "" {
 		s.recordDeny("deny_missing_key", start, "", "", sourceIP, path)
-		return denyResponse(codes.Unauthenticated, "missing or malformed Authorization header"), nil
+		if headerValue(headers, authorizationHeader) != "" {
+			return denyResponse(codes.Unauthenticated, "malformed "+authorizationHeader+" header"), nil
+		}
+		return denyResponse(codes.Unauthenticated, "missing API key credentials: expected "+xAPIKeyHeader+" or "+authorizationHeader+" header"), nil
 	}
 
 	// 2. Hash the key
-	hash := keyutil.HashKey(rawKey)
+	hash := keyutil.HashKey(key)
 
 	// 3. In-memory index lookup
 	rec, ok := s.keyIndex.Lookup(hash)
 	if !ok {
 		s.recordDeny("deny_invalid_key", start, "", "", sourceIP, path)
-		return denyResponse(codes.Unauthenticated, "invalid API key"), nil
+		return denyResponse(codes.Unauthenticated, "invalid API key in "+credentialHeader+" header"), nil
 	}
 
 	// 4. Check gateway namespace authorization
@@ -118,7 +125,26 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 	return allowResponse(rec.Namespace, rec.KeyID), nil
 }
 
-func extractKey(authHeader string) string {
+func apiKeyFromHeaders(headers map[string]string) (string, string) {
+	if key := headerValue(headers, xAPIKeyHeader); key != "" {
+		return key, xAPIKeyHeader
+	}
+	return extractBearerToken(headerValue(headers, authorizationHeader)), authorizationHeader
+}
+
+func headerValue(headers map[string]string, name string) string {
+	if value, ok := headers[strings.ToLower(name)]; ok {
+		return value
+	}
+	for headerName, value := range headers {
+		if strings.EqualFold(headerName, name) {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractBearerToken(authHeader string) string {
 	if authHeader == "" {
 		return ""
 	}
