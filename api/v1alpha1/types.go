@@ -154,7 +154,3 @@ type APIKeyList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []APIKey `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&APIKey{}, &APIKeyList{})
-}
