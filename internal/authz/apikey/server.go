@@ -34,6 +34,7 @@ import (
 
 const (
 	authorizationHeader = "Authorization"
+	apiKeyHeader        = "API-Key"
 	xAPIKeyHeader       = "X-API-Key"
 )
 
@@ -83,14 +84,14 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 			"cannot determine gateway namespace: set context_extensions[gateway-namespace] or use subdomain-based host"), nil
 	}
 
-	// 1. Extract the API key. X-API-Key takes precedence when both headers are present.
+	// 1. Extract the API key in precedence order: Authorization, API-Key, X-API-Key.
 	key, credentialHeader := apiKeyFromHeaders(headers)
 	if key == "" {
 		s.recordDeny("deny_missing_key", start, "", "", sourceIP, path)
 		if headerValue(headers, authorizationHeader) != "" {
 			return denyResponse(codes.Unauthenticated, "malformed "+authorizationHeader+" header"), nil
 		}
-		return denyResponse(codes.Unauthenticated, "missing API key credentials: expected "+xAPIKeyHeader+" or "+authorizationHeader+" header"), nil
+		return denyResponse(codes.Unauthenticated, "missing API key credentials: expected "+authorizationHeader+", "+apiKeyHeader+", or "+xAPIKeyHeader+" header"), nil
 	}
 
 	// 2. Hash the key
@@ -126,10 +127,16 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 }
 
 func apiKeyFromHeaders(headers map[string]string) (string, string) {
+	if authorization := headerValue(headers, authorizationHeader); authorization != "" {
+		return extractBearerToken(authorization), authorizationHeader
+	}
+	if key := headerValue(headers, apiKeyHeader); key != "" {
+		return key, apiKeyHeader
+	}
 	if key := headerValue(headers, xAPIKeyHeader); key != "" {
 		return key, xAPIKeyHeader
 	}
-	return extractBearerToken(headerValue(headers, authorizationHeader)), authorizationHeader
+	return "", ""
 }
 
 func headerValue(headers map[string]string, name string) string {

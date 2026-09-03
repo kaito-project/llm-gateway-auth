@@ -81,7 +81,7 @@ func TestCheck_MissingAuth(t *testing.T) {
 	resp, err := srv.Check(context.Background(), makeCheckRequestWithGateway("", "default"))
 	require.NoError(t, err)
 	assert.NotNil(t, resp.GetDeniedResponse(), "expected denied response for missing auth")
-	assert.Equal(t, "missing API key credentials: expected X-API-Key or Authorization header", resp.GetStatus().GetMessage())
+	assert.Equal(t, "missing API key credentials: expected Authorization, API-Key, or X-API-Key header", resp.GetStatus().GetMessage())
 }
 
 func TestCheck_InvalidFormat(t *testing.T) {
@@ -101,7 +101,7 @@ func TestCheck_UnknownKey(t *testing.T) {
 	assert.Equal(t, "invalid API key in Authorization header", resp.GetStatus().GetMessage())
 }
 
-func TestCheck_InvalidXAPIKeyDoesNotFallBackToAuthorization(t *testing.T) {
+func TestCheck_InvalidAuthorizationDoesNotFallBack(t *testing.T) {
 	srv, idx := newTestServer()
 	result, _ := keyutil.GenerateAPIKey("sk-")
 	idx.Upsert(result.Hash, keyindex.TenantRecord{
@@ -109,12 +109,30 @@ func TestCheck_InvalidXAPIKeyDoesNotFallBackToAuthorization(t *testing.T) {
 		KeyID:     result.KeyID,
 	})
 
-	req := makeCheckRequestWithGateway("Bearer "+result.RawKey, "default")
-	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[xAPIKeyHeader] = "invalid-key"
+	req := makeCheckRequestWithGateway("Bearer invalid-key", "default")
+	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[apiKeyHeader] = result.RawKey
+	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[xAPIKeyHeader] = result.RawKey
 	resp, err := srv.Check(context.Background(), req)
 	require.NoError(t, err)
-	assert.NotNil(t, resp.GetDeniedResponse(), "expected denied response for invalid X-API-Key")
-	assert.Equal(t, "invalid API key in X-API-Key header", resp.GetStatus().GetMessage())
+	assert.NotNil(t, resp.GetDeniedResponse(), "expected denied response for invalid Authorization key")
+	assert.Equal(t, "invalid API key in Authorization header", resp.GetStatus().GetMessage())
+}
+
+func TestCheck_InvalidAPIKeyDoesNotFallBackToXAPIKey(t *testing.T) {
+	srv, idx := newTestServer()
+	result, _ := keyutil.GenerateAPIKey("sk-")
+	idx.Upsert(result.Hash, keyindex.TenantRecord{
+		Namespace: "default",
+		KeyID:     result.KeyID,
+	})
+
+	req := makeCheckRequestWithGateway("", "default")
+	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[apiKeyHeader] = "invalid-key"
+	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[xAPIKeyHeader] = result.RawKey
+	resp, err := srv.Check(context.Background(), req)
+	require.NoError(t, err)
+	assert.NotNil(t, resp.GetDeniedResponse(), "expected denied response for invalid API-Key")
+	assert.Equal(t, "invalid API key in API-Key header", resp.GetStatus().GetMessage())
 }
 
 func TestCheck_ValidKey(t *testing.T) {
@@ -126,6 +144,30 @@ func TestCheck_ValidKey(t *testing.T) {
 	})
 
 	resp, err := srv.Check(context.Background(), makeCheckRequestWithGateway("Bearer "+result.RawKey, "team-alpha"))
+	require.NoError(t, err)
+
+	okResp := resp.GetOkResponse()
+	require.NotNil(t, okResp, "expected OK response")
+
+	headers := make(map[string]string)
+	for _, h := range okResp.GetHeaders() {
+		headers[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+	}
+	assert.Equal(t, "team-alpha", headers["x-tenant-namespace"])
+	assert.Equal(t, result.KeyID, headers["x-key-id"])
+}
+
+func TestCheck_ValidAPIKey(t *testing.T) {
+	srv, idx := newTestServer()
+	result, _ := keyutil.GenerateAPIKey("sk-")
+	idx.Upsert(result.Hash, keyindex.TenantRecord{
+		Namespace: "team-alpha",
+		KeyID:     result.KeyID,
+	})
+
+	req := makeCheckRequestWithGateway("", "team-alpha")
+	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[apiKeyHeader] = result.RawKey
+	resp, err := srv.Check(context.Background(), req)
 	require.NoError(t, err)
 
 	okResp := resp.GetOkResponse()
@@ -163,14 +205,19 @@ func TestCheck_ValidXAPIKey(t *testing.T) {
 	assert.Equal(t, result.KeyID, headers["x-key-id"])
 }
 
-func TestCheck_XAPIKeyTakesPrecedence(t *testing.T) {
+func TestCheck_HeaderPrecedence(t *testing.T) {
 	srv, idx := newTestServer()
 	authResult, _ := keyutil.GenerateAPIKey("sk-")
+	apiKeyResult, _ := keyutil.GenerateAPIKey("sk-")
 	xAPIKeyResult, _ := keyutil.GenerateAPIKey("sk-")
 	idx.SetNamespaceKeys("team-alpha", map[string]keyindex.TenantRecord{
 		authResult.Hash: {
 			Namespace: "team-alpha",
 			KeyID:     authResult.KeyID,
+		},
+		apiKeyResult.Hash: {
+			Namespace: "team-alpha",
+			KeyID:     apiKeyResult.KeyID,
 		},
 		xAPIKeyResult.Hash: {
 			Namespace: "team-alpha",
@@ -178,19 +225,34 @@ func TestCheck_XAPIKeyTakesPrecedence(t *testing.T) {
 		},
 	})
 
-	req := makeCheckRequestWithGateway("Bearer "+authResult.RawKey, "team-alpha")
-	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[xAPIKeyHeader] = xAPIKeyResult.RawKey
-	resp, err := srv.Check(context.Background(), req)
-	require.NoError(t, err)
-
-	okResp := resp.GetOkResponse()
-	require.NotNil(t, okResp, "expected OK response")
-
-	headers := make(map[string]string)
-	for _, h := range okResp.GetHeaders() {
-		headers[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+	tests := []struct {
+		name       string
+		authHeader string
+		apiKey     string
+		xAPIKey    string
+		wantKeyID  string
+	}{
+		{"Authorization before API-Key and X-API-Key", "Bearer " + authResult.RawKey, apiKeyResult.RawKey, xAPIKeyResult.RawKey, authResult.KeyID},
+		{"API-Key before X-API-Key", "", apiKeyResult.RawKey, xAPIKeyResult.RawKey, apiKeyResult.KeyID},
 	}
-	assert.Equal(t, xAPIKeyResult.KeyID, headers["x-key-id"])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := makeCheckRequestWithGateway(tt.authHeader, "team-alpha")
+			req.GetAttributes().GetRequest().GetHttp().GetHeaders()[apiKeyHeader] = tt.apiKey
+			req.GetAttributes().GetRequest().GetHttp().GetHeaders()[xAPIKeyHeader] = tt.xAPIKey
+			resp, err := srv.Check(context.Background(), req)
+			require.NoError(t, err)
+
+			okResp := resp.GetOkResponse()
+			require.NotNil(t, okResp, "expected OK response")
+
+			headers := make(map[string]string)
+			for _, h := range okResp.GetHeaders() {
+				headers[h.GetHeader().GetKey()] = h.GetHeader().GetValue()
+			}
+			assert.Equal(t, tt.wantKeyID, headers["x-key-id"])
+		})
+	}
 }
 
 func TestCheck_BareAuthorizationToken(t *testing.T) {
