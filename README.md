@@ -7,7 +7,7 @@
 
 It plugs into Istio's ingress gateway as an [Envoy `ext_authz`](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_authz_filter) backend and provides two complementary authorization modes for traffic destined to model-serving `InferencePool`s:
 
-- **API-key authz** — validates `sk-…` style bearer tokens against `APIKey` Custom Resources managed by an in-cluster operator.
+- **API-key authz** — validates `sk-…` style keys supplied through `Authorization: Bearer <key>`, `API-Key: <key>`, or `X-API-Key: <key>` (in that precedence order) against `APIKey` Custom Resources managed by an in-cluster operator.
 - **Azure / Entra ID authz** — validates Azure AD JWTs (already verified by Istio `RequestAuthentication`) and performs a Kubernetes `SubjectAccessReview` (SAR) to enforce per-namespace inference RBAC.
 
 ## Architecture
