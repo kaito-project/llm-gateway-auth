@@ -49,10 +49,10 @@ import (
 const (
 	caName         = "apikey-operator-ca"
 	caOrganization = "kaito.sh"
-	// webhookCertDir is mounted as an emptyDir tmpfs in the operator pod
-	// solely to satisfy cert-controller's startup ensureCertsMounted() poll.
-	// The actual serving cert is loaded from the Secret on every handshake;
-	// see the GetCertificate wiring below.
+	// webhookCertDir receives a read-only projection of the rotator-managed
+	// Secret solely to satisfy cert-controller's startup ensureCertsMounted()
+	// poll. The serving cert is loaded from the Secret on every handshake; see
+	// the GetCertificate wiring below.
 	webhookCertDir = "/tmp/k8s-webhook-server/serving-certs"
 )
 
@@ -99,8 +99,8 @@ func main() {
 
 	// Build a namespace-scoped Secret informer/lister so the webhook server
 	// can read the rotator-managed serving cert directly out of the Secret on
-	// every TLS handshake. This avoids the kubelet projected-Secret refresh
-	// lag and removes the need for an on-disk cert mount.
+	// every TLS handshake. This avoids kubelet projected-Secret refresh lag;
+	// the projection is used only for cert-controller's filesystem check.
 	signalCtx := ctrl.SetupSignalHandler()
 	restCfg := ctrl.GetConfigOrDie()
 	clientset, err := kubernetes.NewForConfig(restCfg)
@@ -163,13 +163,11 @@ func main() {
 
 	// cert-controller generates a self-signed CA + serving cert, writes them
 	// to the rotator-managed Secret, and patches the caBundle into the
-	// ValidatingWebhookConfiguration. We set CertDir to an emptyDir tmpfs
-	// mount purely to satisfy the rotator's startup ensureCertsMounted()
-	// poll (which os.Stat()s the cert file and otherwise times out, returns
-	// "could not mount certs", and crashes the manager). The webhook server
-	// itself ignores this directory: GetCertificate above reads the live
-	// cert from the Secret informer on every handshake, so rotations are
-	// picked up without a pod restart.
+	// ValidatingWebhookConfiguration. Its startup ensureCertsMounted() poll
+	// requires tls.crt at CertDir, so the chart projects that Secret there.
+	// The webhook server itself ignores this directory: GetCertificate above
+	// reads the live cert from the Secret informer on every handshake, so
+	// rotations are picked up without a pod restart.
 	if err := rotator.AddRotator(mgr, &rotator.CertRotator{
 		SecretKey: types.NamespacedName{
 			Namespace: podNamespace,

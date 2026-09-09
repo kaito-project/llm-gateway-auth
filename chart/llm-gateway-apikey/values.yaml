@@ -57,7 +57,9 @@ operator:
   # A self-signed CA + serving cert are generated in-process, written to a
   # Secret, and the ValidatingWebhookConfiguration's caBundle is patched at
   # runtime. The webhook server reads the cert directly from the Secret on
-  # every TLS handshake (no on-disk mount). No external cert-manager required.
+  # every TLS handshake. The Secret's certificate is also projected read-only
+  # solely for cert-controller's filesystem readiness check. No external
+  # cert-manager required.
   webhookTLS: {}
 
   # Ports (match cmd/apikey-operator flag defaults).
