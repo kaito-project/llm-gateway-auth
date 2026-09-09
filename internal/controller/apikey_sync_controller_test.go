@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -39,14 +40,16 @@ func TestSyncReconcile_SecretNotFound(t *testing.T) {
 	idx.Upsert("somehash", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "abcd1234"})
 	require.Equal(t, 1, idx.Size())
 
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	recorder := events.NewFakeRecorder(10)
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
 	require.NoError(t, err)
 
-	// Index should be cleared for the namespace
+	// Index should be cleared for the namespace without emitting an Event.
 	assert.Equal(t, 0, idx.Size(), "expected index size 0 after Secret not found")
+	requireNoEvent(t, recorder)
 }
 
 func TestSyncReconcile_EmptyKey(t *testing.T) {
@@ -57,6 +60,12 @@ func TestSyncReconcile_EmptyKey(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "llm-api-key",
 			Namespace: "team-alpha",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: v1alpha1.GroupVersion.String(),
+				Kind:       "APIKey",
+				Name:       "default",
+				UID:        types.UID("apikey-uid"),
+			}},
 		},
 		Data: map[string][]byte{
 			keyutil.SecretKey: []byte(""),
@@ -67,12 +76,41 @@ func TestSyncReconcile_EmptyKey(t *testing.T) {
 	// Pre-populate
 	idx.Upsert("oldhash", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "old"})
 
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	recorder := events.NewFakeRecorder(10)
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 0, idx.Size(), "expected index size 0 for empty key")
+	requireEvent(t, recorder, `Warning EmptyAPIKey Managed Secret "llm-api-key" has no primary API key; authorization index was cleared`)
+}
+
+func TestSyncReconcile_MissingKeyField(t *testing.T) {
+	s := setupScheme()
+	idx := keyindex.New()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-api-key",
+			Namespace: "team-alpha",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: v1alpha1.GroupVersion.String(),
+				Kind:       "APIKey",
+				Name:       "default",
+				UID:        types.UID("apikey-uid"),
+			}},
+		},
+		Data: map[string][]byte{},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
+	recorder := events.NewFakeRecorder(10)
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
+
+	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
+	})
+	require.NoError(t, err)
+	requireEvent(t, recorder, `Warning EmptyAPIKey Managed Secret "llm-api-key" has no primary API key; authorization index was cleared`)
 }
 
 func TestSyncReconcile_SyncsPrimaryKey(t *testing.T) {
@@ -91,11 +129,13 @@ func TestSyncReconcile_SyncsPrimaryKey(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
 
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	recorder := events.NewFakeRecorder(10)
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
 	require.NoError(t, err)
+	requireNoEvent(t, recorder)
 
 	expectedHash := keyutil.HashKey(rawKey)
 	expectedKeyID := keyutil.KeyIDFromHash(expectedHash)
@@ -125,11 +165,13 @@ func TestSyncReconcile_SyncsPrimaryAndSecondaryKey(t *testing.T) {
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
 
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	recorder := events.NewFakeRecorder(10)
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
 	})
 	require.NoError(t, err)
+	requireNoEvent(t, recorder)
 
 	// Both keys should be in the index
 	currentHash := keyutil.HashKey(rawKey)
@@ -259,6 +301,29 @@ func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
 	assert.Equal(t, "team-beta", rec.Namespace)
 }
 
+func TestAPIKeyEventSubject(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-api-key",
+			Namespace: "team-alpha",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: v1alpha1.GroupVersion.String(),
+				Kind:       "APIKey",
+				Name:       "default",
+				UID:        types.UID("apikey-uid"),
+			}},
+		},
+	}
+
+	subject := apiKeyEventSubject(secret)
+	require.NotNil(t, subject)
+	assert.Equal(t, v1alpha1.GroupVersion.String(), subject.APIVersion)
+	assert.Equal(t, "APIKey", subject.Kind)
+	assert.Equal(t, "team-alpha", subject.Namespace)
+	assert.Equal(t, "default", subject.Name)
+	assert.Equal(t, types.UID("apikey-uid"), subject.UID)
+}
+
 func TestManagedSecretPredicate(t *testing.T) {
 	apiKeyGV := v1alpha1.GroupVersion.String()
 
@@ -332,14 +397,7 @@ func TestManagedSecretPredicate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := false
-			for _, ref := range tt.obj.GetOwnerReferences() {
-				if ref.APIVersion == apiKeyGV && ref.Kind == "APIKey" {
-					result = true
-					break
-				}
-			}
-			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.expected, apiKeyOwnerReference(tt.obj) != nil)
 		})
 	}
 }

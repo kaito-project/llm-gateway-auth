@@ -15,6 +15,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -25,8 +26,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 )
@@ -36,6 +40,61 @@ func setupScheme() *runtime.Scheme {
 	clientgoscheme.AddToScheme(s)
 	v1alpha1.AddToScheme(s)
 	return s
+}
+
+type capturedEvent struct {
+	EventType string
+	Reason    string
+	Action    string
+	Note      string
+}
+
+type capturedEventRecorder struct {
+	Events []capturedEvent
+}
+
+func (r *capturedEventRecorder) Eventf(_ runtime.Object, _ runtime.Object, eventType, reason, action, note string, args ...any) {
+	r.Events = append(r.Events, capturedEvent{
+		EventType: eventType,
+		Reason:    reason,
+		Action:    action,
+		Note:      fmt.Sprintf(note, args...),
+	})
+}
+
+func requireCapturedEvent(t *testing.T, recorder *capturedEventRecorder, expected capturedEvent) {
+	t.Helper()
+	require.Equal(t, []capturedEvent{expected}, recorder.Events)
+}
+
+func requireEvent(t *testing.T, recorder *events.FakeRecorder, expected string) {
+	t.Helper()
+	select {
+	case event := <-recorder.Events:
+		require.Equal(t, expected, event)
+	default:
+		t.Fatal("expected Kubernetes Event, got none")
+	}
+}
+
+func requireNoEvent(t *testing.T, recorder *events.FakeRecorder) {
+	t.Helper()
+	select {
+	case event := <-recorder.Events:
+		t.Fatalf("expected no Kubernetes Event, got %q", event)
+	default:
+	}
+}
+
+func findReadyCondition(t *testing.T, apiKey *v1alpha1.APIKey) *metav1.Condition {
+	t.Helper()
+	for i := range apiKey.Status.Conditions {
+		if apiKey.Status.Conditions[i].Type == "Ready" {
+			return &apiKey.Status.Conditions[i]
+		}
+	}
+	t.Fatal("expected Ready condition")
+	return nil
 }
 
 func TestReconcile_InvalidName(t *testing.T) {
@@ -81,7 +140,8 @@ func TestReconcile_GeneratesSecret(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
+	recorder := events.NewFakeRecorder(10)
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
 
 	// First reconcile: should create Secret and set status.secretRef
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -89,6 +149,7 @@ func TestReconcile_GeneratesSecret(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotZero(t, result.RequeueAfter, "expected requeue after Secret creation")
+	requireEvent(t, recorder, `Normal Created Stored newly generated API key material in Secret "llm-api-key"`)
 
 	// Verify Secret was created
 	var secret corev1.Secret
@@ -109,11 +170,43 @@ func TestReconcile_GeneratesSecret(t *testing.T) {
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})
 	require.NoError(t, err, "unexpected error on second reconcile")
+	requireNoEvent(t, recorder)
 
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
 	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
 	require.NotNil(t, updated.Status.Primary, "expected primary to be set")
 	assert.NotEmpty(t, updated.Status.Primary.KeyID, "expected primary.keyID to be set")
+}
+
+func TestReconcile_SecretCreateFailureEmitsEvent(t *testing.T) {
+	s := setupScheme()
+	apiKey := &v1alpha1.APIKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "team-alpha"},
+		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-"},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(apiKey).
+		WithStatusSubresource(apiKey).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+				return assert.AnError
+			},
+		}).
+		Build()
+	recorder := &capturedEventRecorder{}
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
+	})
+	require.ErrorIs(t, err, assert.AnError)
+	requireCapturedEvent(t, recorder, capturedEvent{
+		EventType: corev1.EventTypeWarning,
+		Reason:    eventReasonSecretWriteFailed,
+		Action:    eventActionCreateSecret,
+		Note:      `Failed to create Secret "llm-api-key"`,
+	})
 }
 
 func TestReconcile_ExistingSecretInStatus(t *testing.T) {
@@ -170,16 +263,21 @@ func TestReconcile_ExpiredKey(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
+	recorder := events.NewFakeRecorder(10)
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
 
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"}}
+	_, err := r.Reconcile(context.Background(), request)
 	require.NoError(t, err)
 
 	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
+	require.NoError(t, c.Get(context.Background(), request.NamespacedName, &updated))
 	assert.Equal(t, v1alpha1.PhaseExpired, updated.Status.Phase)
+	requireEvent(t, recorder, "Warning Expired "+findReadyCondition(t, &updated).Message)
+
+	_, err = r.Reconcile(context.Background(), request)
+	require.NoError(t, err)
+	requireNoEvent(t, recorder)
 }
 
 func TestReconcile_SecretDeletedRegenerates(t *testing.T) {
@@ -200,7 +298,8 @@ func TestReconcile_SecretDeletedRegenerates(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
+	recorder := events.NewFakeRecorder(10)
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
 
 	// First reconcile: detect missing Secret, clear secretRef
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
@@ -208,11 +307,76 @@ func TestReconcile_SecretDeletedRegenerates(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.NotZero(t, result.RequeueAfter, "expected requeue when Secret is missing")
+	requireEvent(t, recorder, `Warning SecretMissing Secret "llm-api-key" was not found; API key material will be regenerated`)
 
 	// Verify secretRef was cleared
 	var updated v1alpha1.APIKey
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
 	assert.Nil(t, updated.Status.SecretRef, "expected status.secretRef to be cleared")
+}
+
+func TestReconcile_CorruptSecretRegenerates(t *testing.T) {
+	s := setupScheme()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "llm-api-key", Namespace: "team-alpha"},
+		Data:       map[string][]byte{},
+	}
+	apiKey := &v1alpha1.APIKey{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "team-alpha"},
+		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-"},
+		Status: v1alpha1.APIKeyStatus{
+			SecretRef: &v1alpha1.SecretReference{Name: "llm-api-key"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
+	recorder := events.NewFakeRecorder(10)
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
+
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
+	})
+	require.NoError(t, err)
+	assert.NotZero(t, result.RequeueAfter)
+	requireEvent(t, recorder, `Warning SecretCorrupt Secret "llm-api-key" has no primary API key; API key material will be regenerated`)
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated))
+	assert.Nil(t, updated.Status.SecretRef)
+}
+
+func newDueRotationObjects(apiKeyUID types.UID) (*v1alpha1.APIKey, *corev1.Secret) {
+	apiKey := &v1alpha1.APIKey{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "default",
+			Namespace:  "team-alpha",
+			UID:        apiKeyUID,
+			Finalizers: []string{finalizerName},
+		},
+		Spec: v1alpha1.APIKeySpec{
+			Prefix: "sk-",
+			Rotation: &v1alpha1.RotationSpec{
+				RotateAt: &metav1.Time{Time: time.Now().Add(-time.Minute)},
+			},
+		},
+		Status: v1alpha1.APIKeyStatus{
+			Primary:   &v1alpha1.KeyStatus{KeyID: "oldkeyid"},
+			Phase:     v1alpha1.PhaseActive,
+			SecretRef: &v1alpha1.SecretReference{Name: "llm-api-key"},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-api-key",
+			Namespace: "team-alpha",
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(apiKey, v1alpha1.GroupVersion.WithKind("APIKey")),
+			},
+		},
+		Data: map[string][]byte{
+			"apiKey": []byte("sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"),
+		},
+	}
+	return apiKey, secret
 }
 
 func TestReconcile_Rotation(t *testing.T) {
@@ -255,7 +419,8 @@ func TestReconcile_Rotation(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
+	recorder := events.NewFakeRecorder(10)
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
 
 	result, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
@@ -277,6 +442,7 @@ func TestReconcile_Rotation(t *testing.T) {
 	assert.Equal(t, "oldkeyid", updated.Status.Secondary.KeyID)
 	assert.NotNil(t, updated.Status.LastRotatedAt, "expected status.lastRotatedAt to be set")
 	assert.NotEqual(t, "oldkeyid", updated.Status.Primary.KeyID, "expected status.primaryKey.keyID to change after rotation")
+	requireEvent(t, recorder, "Normal Rotated "+findReadyCondition(t, &updated).Message)
 
 	// Verify spec.rotation.rotateAt was NOT mutated (controller should not write to spec)
 	assert.NotNil(t, updated.Spec.Rotation, "expected spec.rotation to be preserved")
@@ -285,6 +451,65 @@ func TestReconcile_Rotation(t *testing.T) {
 	// Verify lastRotatedAt >= rotateAt (rotation acknowledged via status)
 	assert.False(t, updated.Status.LastRotatedAt.Time.Before(updated.Spec.Rotation.RotateAt.Time),
 		"expected status.lastRotatedAt >= spec.rotation.rotateAt")
+}
+
+func TestReconcile_RotationSecretUpdateFailureEmitsEvent(t *testing.T) {
+	s := setupScheme()
+	apiKey, secret := newDueRotationObjects(types.UID("rotation-secret-failure-uid"))
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(apiKey, secret).
+		WithStatusSubresource(apiKey).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, delegate client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					return assert.AnError
+				}
+				return delegate.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	recorder := &capturedEventRecorder{}
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
+	})
+	require.ErrorIs(t, err, assert.AnError)
+	requireCapturedEvent(t, recorder, capturedEvent{
+		EventType: corev1.EventTypeWarning,
+		Reason:    eventReasonRotationFailed,
+		Action:    eventActionRotateSecret,
+		Note:      `Failed to update Secret "llm-api-key" with rotated API key material`,
+	})
+}
+
+func TestReconcile_RotationStatusUpdateFailureEmitsEvent(t *testing.T) {
+	s := setupScheme()
+	apiKey, secret := newDueRotationObjects(types.UID("rotation-status-failure-uid"))
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(apiKey, secret).
+		WithStatusSubresource(apiKey).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+				return assert.AnError
+			},
+		}).
+		Build()
+	recorder := &capturedEventRecorder{}
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
+	})
+	require.ErrorIs(t, err, assert.AnError)
+	requireCapturedEvent(t, recorder, capturedEvent{
+		EventType: corev1.EventTypeWarning,
+		Reason:    eventReasonRotationFailed,
+		Action:    eventActionPersistRotationStatus,
+		Note:      `Failed to persist APIKey status after rotating Secret "llm-api-key"`,
+	})
 }
 
 func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
@@ -391,12 +616,14 @@ func TestReconcile_GracePeriodExpiry(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
+	recorder := events.NewFakeRecorder(10)
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
 
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
 	})
 	require.NoError(t, err)
+	requireEvent(t, recorder, `Normal SecondaryKeyRemoved Removed expired secondary API key from Secret "llm-api-key"`)
 
 	// Verify status.secondaryKey was cleared
 	var updated v1alpha1.APIKey
@@ -436,12 +663,13 @@ func TestReconcile_SecretConflictNotOwned(t *testing.T) {
 	}
 
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, unownedSecret).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
+	recorder := events.NewFakeRecorder(10)
+	r := &APIKeyReconciler{Client: c, Recorder: recorder}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"}}
 
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
+	_, err := r.Reconcile(context.Background(), request)
 	require.NoError(t, err)
+	requireEvent(t, recorder, `Warning SecretConflict Secret "llm-api-key" already exists but is not owned by this APIKey`)
 
 	// Verify the unowned Secret data was NOT overwritten
 	var secret corev1.Secret
@@ -452,6 +680,10 @@ func TestReconcile_SecretConflictNotOwned(t *testing.T) {
 	var updated v1alpha1.APIKey
 	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
 	assert.Equal(t, v1alpha1.PhasePending, updated.Status.Phase)
+
+	_, err = r.Reconcile(context.Background(), request)
+	require.NoError(t, err)
+	requireNoEvent(t, recorder)
 }
 
 func TestGracePeriod_Default(t *testing.T) {

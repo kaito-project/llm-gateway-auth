@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -258,6 +259,40 @@ func waitForSecret(t *testing.T, namespace, secretName string, timeout time.Dura
 		time.Sleep(pollInterval)
 	}
 	t.Fatalf("timed out waiting for Secret %s/%s", namespace, secretName)
+	return nil
+}
+
+// waitForAPIKeyEvent polls until the expected events.k8s.io Event is reported
+// for a specific APIKey UID.
+func waitForAPIKeyEvent(
+	t *testing.T,
+	apiKey *v1alpha1.APIKey,
+	eventType, reason, reportingController string,
+	timeout time.Duration,
+) *eventsv1.Event {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var eventList eventsv1.EventList
+		if err := k8sClient.List(ctx, &eventList, client.InNamespace(apiKey.Namespace)); err == nil {
+			for i := range eventList.Items {
+				event := &eventList.Items[i]
+				if event.Regarding.APIVersion == v1alpha1.GroupVersion.String() &&
+					event.Regarding.Kind == "APIKey" &&
+					event.Regarding.Namespace == apiKey.Namespace &&
+					event.Regarding.Name == apiKey.Name &&
+					event.Regarding.UID == apiKey.UID &&
+					event.Type == eventType &&
+					event.Reason == reason &&
+					event.ReportingController == reportingController {
+					return event
+				}
+			}
+		}
+		time.Sleep(pollInterval)
+	}
+	t.Fatalf("timed out waiting for %s/%s Event from %s for APIKey %s/%s (UID %s)",
+		eventType, reason, reportingController, apiKey.Namespace, apiKey.Name, apiKey.UID)
 	return nil
 }
 

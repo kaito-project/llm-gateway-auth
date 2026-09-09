@@ -39,6 +39,7 @@
 package e2e
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +137,8 @@ func TestAPIKeyRotation(t *testing.T) {
 		"primary and secondary keyIDs should differ after rotation")
 	t.Logf("Rotation complete: newKeyID=%s secondaryKeyID=%s",
 		rotatedKey.Status.Primary.KeyID, rotatedKey.Status.Secondary.KeyID)
+	rotationEvent := waitForAPIKeyEvent(t, rotatedKey, corev1.EventTypeNormal, "Rotated", "apikey-operator", defaultTimeout)
+	assert.Equal(t, "Rotated", rotationEvent.Action)
 
 	// Fetch the rotated Secret — it should have both keys.
 	var rotatedSec corev1.Secret
@@ -202,4 +205,30 @@ func TestAPIKeyExpiry(t *testing.T) {
 		t.Logf("Ready condition: status=%s reason=%s message=%s",
 			readyCond.Status, readyCond.Reason, readyCond.Message)
 	}
+	expiryEvent := waitForAPIKeyEvent(t, expiredKey, corev1.EventTypeWarning, "Expired", "apikey-operator", defaultTimeout)
+	assert.Equal(t, "Expired", expiryEvent.Action)
+}
+
+func TestAPIKeyAuthzEmptyKeyEvent(t *testing.T) {
+	testNS := createNamespace(t, "e2e-empty-key-event")
+	_ = createAPIKey(t, testNS, "720h")
+	apiKey := waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseActive, defaultTimeout)
+	waitForSecret(t, testNS, apiKeySecret, defaultTimeout)
+
+	emptySecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "empty-api-key-event",
+			Namespace: testNS,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(apiKey, v1alpha1.GroupVersion.WithKind("APIKey")),
+			},
+		},
+		Data: map[string][]byte{"apiKey": []byte{}},
+	}
+	require.NoError(t, k8sClient.Create(ctx, emptySecret))
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), emptySecret) })
+
+	event := waitForAPIKeyEvent(t, apiKey, corev1.EventTypeWarning, "EmptyAPIKey", "apikey-authz", defaultTimeout)
+	assert.Equal(t, "EmptyAPIKey", event.Action)
+	assert.Contains(t, event.Note, `Managed Secret "empty-api-key-event" has no primary API key`)
 }

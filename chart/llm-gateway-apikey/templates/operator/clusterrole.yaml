@@ -22,7 +22,11 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Events — for audit logging of key creation, rotation, expiry
+  # Events — operational diagnostics for APIKey lifecycle transitions
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  # Legacy core Events — controller-runtime leader election still uses this API
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
