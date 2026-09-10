@@ -155,7 +155,8 @@ func main() {
 	}
 
 	if err := (&controller.APIKeyReconciler{
-		Client: mgr.GetClient(),
+		Client:   mgr.GetClient(),
+		Recorder: mgr.GetEventRecorder("apikey-operator"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "APIKey")
 		os.Exit(1)

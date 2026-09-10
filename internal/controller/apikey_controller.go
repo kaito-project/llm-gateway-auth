@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,11 +36,59 @@ import (
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
-const finalizerName = "kaito.sh/key-cleanup"
+const (
+	finalizerName = "kaito.sh/key-cleanup"
+
+	eventReasonCreated             = "Created"
+	eventReasonExpired             = "Expired"
+	eventReasonKeyGenerationFailed = "KeyGenerationFailed"
+	eventReasonRotated             = "Rotated"
+	eventReasonRotationFailed      = "RotationFailed"
+	eventReasonSecondaryKeyRemoved = "SecondaryKeyRemoved"
+	eventReasonSecretConflict      = "SecretConflict"
+	eventReasonSecretCorrupt       = "SecretCorrupt"
+	eventReasonSecretMissing       = "SecretMissing"
+	eventReasonSecretWriteFailed   = "SecretWriteFailed"
+
+	eventActionCreateSecret           = "CreateSecret"
+	eventActionGeneratePrimaryKey     = "GeneratePrimaryKey"
+	eventActionGenerateReplacementKey = "GenerateReplacementKey"
+	eventActionGenerateSecondaryKey   = "GenerateSecondaryKey"
+	eventActionPersistRotationStatus  = "PersistRotationStatus"
+	eventActionReadSecret             = "ReadSecret"
+	eventActionRotateSecret           = "RotateSecret"
+	eventActionUpdateSecret           = "UpdateSecret"
+)
 
 // APIKeyReconciler reconciles APIKey objects.
 type APIKeyReconciler struct {
 	client.Client
+	Recorder events.EventRecorder
+}
+
+func (r *APIKeyReconciler) emitEvent(apiKey *v1alpha1.APIKey, eventType, reason, message string) {
+	r.emitEventWithAction(apiKey, eventType, reason, reason, message)
+}
+
+func (r *APIKeyReconciler) emitEventWithAction(apiKey *v1alpha1.APIKey, eventType, reason, action, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(apiKey, nil, eventType, reason, action, "%s", message)
+	}
+}
+
+func (r *APIKeyReconciler) emitEventf(apiKey *v1alpha1.APIKey, eventType, reason, messageFmt string, args ...any) {
+	r.emitEventfWithAction(apiKey, eventType, reason, reason, messageFmt, args...)
+}
+
+func (r *APIKeyReconciler) emitEventfWithAction(apiKey *v1alpha1.APIKey, eventType, reason, action, messageFmt string, args ...any) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(apiKey, nil, eventType, reason, action, messageFmt, args...)
+	}
+}
+
+func readyConditionHasReason(apiKey *v1alpha1.APIKey, status metav1.ConditionStatus, reason string) bool {
+	condition := meta.FindStatusCondition(apiKey.Status.Conditions, "Ready")
+	return condition != nil && condition.Status == status && condition.Reason == reason
 }
 
 func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -192,6 +241,8 @@ func (r *APIKeyReconciler) computeExpiresAt(apiKey *v1alpha1.APIKey) *time.Time 
 // handleExpiry marks the key as expired.
 func (r *APIKeyReconciler) handleExpiry(ctx context.Context, apiKey *v1alpha1.APIKey, expiresAt *time.Time) error {
 	logger := log.FromContext(ctx)
+	alreadyExpired := readyConditionHasReason(apiKey, metav1.ConditionFalse, eventReasonExpired)
+	expiryMessage := fmt.Sprintf("Key expired at %s", expiresAt.Format(time.RFC3339))
 
 	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		obj.Status.Phase = v1alpha1.PhaseExpired
@@ -202,12 +253,15 @@ func (r *APIKeyReconciler) handleExpiry(ctx context.Context, apiKey *v1alpha1.AP
 		meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 			Type:               "Ready",
 			Status:             metav1.ConditionFalse,
-			Reason:             "Expired",
-			Message:            fmt.Sprintf("Key expired at %s", expiresAt.Format(time.RFC3339)),
+			Reason:             eventReasonExpired,
+			Message:            expiryMessage,
 			LastTransitionTime: metav1.Now(),
 		})
 	}); err != nil {
 		return err
+	}
+	if !alreadyExpired {
+		r.emitEvent(apiKey, corev1.EventTypeWarning, eventReasonExpired, expiryMessage)
 	}
 	logger.Info("APIKey expired", "namespace", apiKey.Namespace, "keyID", primaryKeyID(apiKey), "expiresAt", expiresAt.Format(time.RFC3339))
 	return nil
@@ -221,10 +275,12 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 
 	primary, err := keyutil.GenerateAPIKey(prefix)
 	if err != nil {
+		r.emitEventWithAction(apiKey, corev1.EventTypeWarning, eventReasonKeyGenerationFailed, eventActionGeneratePrimaryKey, "Failed to generate primary API key")
 		return ctrl.Result{}, fmt.Errorf("failed to generate API key: %w", err)
 	}
 	secondary, err := keyutil.GenerateAPIKey(prefix)
 	if err != nil {
+		r.emitEventWithAction(apiKey, corev1.EventTypeWarning, eventReasonKeyGenerationFailed, eventActionGenerateSecondaryKey, "Failed to generate secondary API key")
 		return ctrl.Result{}, fmt.Errorf("failed to generate secondary API key: %w", err)
 	}
 
@@ -249,21 +305,31 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 	}
 	if err := r.Create(ctx, secret); err != nil {
 		if !errors.IsAlreadyExists(err) {
+			r.emitEventfWithAction(apiKey, corev1.EventTypeWarning, eventReasonSecretWriteFailed, eventActionCreateSecret, "Failed to create Secret %q", keyutil.SecretName)
 			return ctrl.Result{}, fmt.Errorf("failed to create secret: %w", err)
 		}
 		// Secret already exists – verify it is owned by this APIKey before updating
 		existing := &corev1.Secret{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: apiKey.Namespace, Name: keyutil.SecretName}, existing); err != nil {
+			r.emitEventfWithAction(apiKey, corev1.EventTypeWarning, eventReasonSecretWriteFailed, eventActionReadSecret, "Failed to read existing Secret %q", keyutil.SecretName)
 			return ctrl.Result{}, err
 		}
 		if !metav1.IsControlledBy(existing, apiKey) {
-			return ctrl.Result{}, r.markNotReady(ctx, apiKey, "SecretConflict",
-				fmt.Sprintf("Secret %q already exists but is not owned by this APIKey", keyutil.SecretName))
+			alreadyConflicted := readyConditionHasReason(apiKey, metav1.ConditionFalse, eventReasonSecretConflict)
+			message := fmt.Sprintf("Secret %q already exists but is not owned by this APIKey", keyutil.SecretName)
+			if err := r.markNotReady(ctx, apiKey, eventReasonSecretConflict, message); err != nil {
+				return ctrl.Result{}, err
+			}
+			if !alreadyConflicted {
+				r.emitEvent(apiKey, corev1.EventTypeWarning, eventReasonSecretConflict, message)
+			}
+			return ctrl.Result{}, nil
 		}
 		if err := r.updateSecretWithRetry(ctx, existing, apiKey, func(s *corev1.Secret) error {
 			s.Data = data
 			return nil
 		}); err != nil {
+			r.emitEventfWithAction(apiKey, corev1.EventTypeWarning, eventReasonSecretWriteFailed, eventActionUpdateSecret, "Failed to update existing Secret %q", keyutil.SecretName)
 			return ctrl.Result{}, err
 		}
 	}
@@ -281,6 +347,7 @@ func (r *APIKeyReconciler) createKeySecret(ctx context.Context, apiKey *v1alpha1
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.emitEventf(apiKey, corev1.EventTypeNormal, eventReasonCreated, "Stored newly generated API key material in Secret %q", keyutil.SecretName)
 	logger.Info("Secret created for APIKey", "namespace", apiKey.Namespace, "primaryKeyID", primary.KeyID, "secondaryKeyID", secondary.KeyID)
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 }
@@ -309,14 +376,22 @@ func (r *APIKeyReconciler) fetchKeySecret(ctx context.Context, apiKey *v1alpha1.
 	if err := r.Get(ctx, secretNN, &secret); err != nil {
 		if errors.IsNotFound(err) {
 			logger.Info("Secret not found, will regenerate", "namespace", apiKey.Namespace, "keyID", primaryKeyID(apiKey), "secret", secretNN.Name)
-			return nil, true, r.clearSecretRef(ctx, apiKey)
+			if err := r.clearSecretRef(ctx, apiKey); err != nil {
+				return nil, true, err
+			}
+			r.emitEventf(apiKey, corev1.EventTypeWarning, eventReasonSecretMissing, "Secret %q was not found; API key material will be regenerated", secretNN.Name)
+			return nil, true, nil
 		}
 		return nil, false, err
 	}
 
 	if rawKey, ok := secret.Data[keyutil.SecretKey]; !ok || len(rawKey) == 0 {
 		logger.Info("Secret has empty key field, will regenerate", "namespace", apiKey.Namespace, "keyID", primaryKeyID(apiKey), "secret", secretNN.Name)
-		return nil, true, r.clearSecretRef(ctx, apiKey)
+		if err := r.clearSecretRef(ctx, apiKey); err != nil {
+			return nil, true, err
+		}
+		r.emitEventf(apiKey, corev1.EventTypeWarning, eventReasonSecretCorrupt, "Secret %q has no primary API key; API key material will be regenerated", secretNN.Name)
+		return nil, true, nil
 	}
 
 	return &secret, false, nil
@@ -362,9 +437,13 @@ func (r *APIKeyReconciler) cleanupExpiredSecondaryKey(ctx context.Context, apiKe
 	}); err != nil {
 		return err
 	}
-	return r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
+	if err := r.updateStatusWithRetry(ctx, apiKey, func(obj *v1alpha1.APIKey) {
 		obj.Status.Secondary = nil
-	})
+	}); err != nil {
+		return err
+	}
+	r.emitEventf(apiKey, corev1.EventTypeNormal, eventReasonSecondaryKeyRemoved, "Removed expired secondary API key from Secret %q", secret.Name)
+	return nil
 }
 
 // syncKeyIndex was moved to the authz-plugin component (internal/indexsync).
@@ -428,6 +507,7 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 	// Generate new key
 	result, err := keyutil.GenerateAPIKey(prefix)
 	if err != nil {
+		r.emitEventWithAction(apiKey, corev1.EventTypeWarning, eventReasonRotationFailed, eventActionGenerateReplacementKey, "Failed to generate replacement API key")
 		return ctrl.Result{}, fmt.Errorf("failed to generate API key for rotation: %w", err)
 	}
 
@@ -444,6 +524,7 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 		s.Data[keyutil.SecretKey] = []byte(result.RawKey)
 		return nil
 	}); err != nil {
+		r.emitEventfWithAction(apiKey, corev1.EventTypeWarning, eventReasonRotationFailed, eventActionRotateSecret, "Failed to update Secret %q with rotated API key material", secret.Name)
 		return ctrl.Result{}, fmt.Errorf("failed to update secret for rotation: %w", err)
 	}
 
@@ -487,9 +568,11 @@ func (r *APIKeyReconciler) handleRotation(ctx context.Context, apiKey *v1alpha1.
 			LastTransitionTime: metav1.Now(),
 		})
 	}); err != nil {
+		r.emitEventfWithAction(apiKey, corev1.EventTypeWarning, eventReasonRotationFailed, eventActionPersistRotationStatus, "Failed to persist APIKey status after rotating Secret %q", secret.Name)
 		return ctrl.Result{}, err
 	}
 
+	r.emitEventf(apiKey, corev1.EventTypeNormal, eventReasonRotated, "Key rotated, secondary key valid until %s", secondaryExpiresAt.Format(time.RFC3339))
 	logger.Info("APIKey rotated",
 		"namespace", apiKey.Namespace,
 		"newKeyID", newKeyID,

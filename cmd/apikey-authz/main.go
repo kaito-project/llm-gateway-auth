@@ -33,6 +33,7 @@ import (
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 	apikeyauthz "github.com/kaito-project/llm-gateway-auth/internal/authz/apikey"
 	"github.com/kaito-project/llm-gateway-auth/internal/controller"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
@@ -83,6 +84,10 @@ func main() {
 		ctrl.Log.Error(err, "unable to add corev1 scheme")
 		os.Exit(1)
 	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		ctrl.Log.Error(err, "unable to add APIKey scheme")
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -101,6 +106,7 @@ func main() {
 	if err := (&controller.IndexSyncer{
 		Client:   mgr.GetClient(),
 		KeyIndex: idx,
+		Recorder: mgr.GetEventRecorder("apikey-authz"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create IndexSyncer")
 		os.Exit(1)

@@ -21,6 +21,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,11 +34,62 @@ import (
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
+const eventReasonEmptyAPIKey = "EmptyAPIKey"
+
 // IndexSyncer watches managed Secrets and keeps a keyindex.Index in sync with
 // the current set of valid key hashes.
 type IndexSyncer struct {
 	client.Client
 	KeyIndex *keyindex.Index
+	Recorder events.EventRecorder
+}
+
+func apiKeyOwnerReference(obj metav1.Object) *metav1.OwnerReference {
+	refs := obj.GetOwnerReferences()
+	for i := range refs {
+		ref := &refs[i]
+		if ref.APIVersion == v1alpha1.GroupVersion.String() && ref.Kind == "APIKey" {
+			return ref
+		}
+	}
+	return nil
+}
+
+func apiKeyEventSubject(secret *corev1.Secret) *v1alpha1.APIKey {
+	owner := apiKeyOwnerReference(secret)
+	if owner == nil {
+		return nil
+	}
+	return &v1alpha1.APIKey{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: v1alpha1.GroupVersion.String(),
+			Kind:       "APIKey",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      owner.Name,
+			Namespace: secret.Namespace,
+			UID:       owner.UID,
+		},
+	}
+}
+
+func (s *IndexSyncer) emitEmptyAPIKeyEvent(secret *corev1.Secret) {
+	if s.Recorder == nil {
+		return
+	}
+	apiKey := apiKeyEventSubject(secret)
+	if apiKey == nil {
+		return
+	}
+	s.Recorder.Eventf(
+		apiKey,
+		nil,
+		corev1.EventTypeWarning,
+		eventReasonEmptyAPIKey,
+		eventReasonEmptyAPIKey,
+		"Managed Secret %q has no primary API key; authorization index was cleared",
+		secret.Name,
+	)
 }
 
 func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -55,6 +108,7 @@ func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Res
 	rawKey := string(secret.Data[keyutil.SecretKey])
 	if rawKey == "" {
 		s.KeyIndex.RemoveByNamespace(req.Namespace)
+		s.emitEmptyAPIKeyEvent(&secret)
 		return ctrl.Result{}, nil
 	}
 
@@ -85,12 +139,7 @@ func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Res
 // only managed Secret objects.
 func (s *IndexSyncer) SetupWithManager(mgr ctrl.Manager) error {
 	managedSecretPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		for _, ref := range obj.GetOwnerReferences() {
-			if ref.APIVersion == v1alpha1.GroupVersion.String() && ref.Kind == "APIKey" {
-				return true
-			}
-		}
-		return false
+		return apiKeyOwnerReference(obj) != nil
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
