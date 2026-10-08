@@ -64,6 +64,31 @@ make helm-uninstall
 
 Chart values are documented in [chart/llm-gateway-apikey/values.yaml](chart/llm-gateway-apikey/values.yaml).
 
+### Upgrading expiry enforcement
+
+Roll out the API-key operator before the API-key authz component. The operator
+backfills expiry deadlines and key-hash bindings on existing owned Secrets; the
+authz component strictly requires this metadata to match the key bytes and fails
+closed when it is missing, invalid, or mismatched.
+
+1. Deploy the new `apikey-operator` and wait for its rollout to complete.
+2. Confirm active managed Secrets have `kaito.sh/primary-key-expires-at` and
+   `kaito.sh/primary-key-hash`. When secondary key data exists, also confirm
+   `kaito.sh/secondary-key-expires-at` and `kaito.sh/secondary-key-hash`.
+3. Deploy the new `apikey-authz` component.
+
+If both components are upgraded simultaneously, new authz replicas can observe
+a legacy Secret before the operator backfills it. Requests using that Secret
+will be denied transiently until reconciliation completes; this is intentional
+fail-closed behavior.
+
+Rolling back only the operator can leave the fixed authz component observing key
+bytes written by old code without matching hash bindings. Those credentials are
+denied until a fixed operator reconciles or replaces the Secret. Old operators
+may remove secondary key bytes without removing the newer secondary annotations;
+the authz component ignores that stale secondary metadata and continues to use a
+valid, correctly bound primary key.
+
 ## Contributing
 
 This project welcomes contributions and suggestions. Contributions require you to agree to a Contributor License Agreement (CLA). For details, visit [CLAs for CNCF](https://github.com/cncf/cla?tab=readme-ov-file).

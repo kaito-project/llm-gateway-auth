@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -34,7 +35,10 @@ import (
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
-const eventReasonEmptyAPIKey = "EmptyAPIKey"
+const (
+	eventReasonEmptyAPIKey        = "EmptyAPIKey"
+	eventReasonInvalidKeyMetadata = "InvalidKeyMetadata"
+)
 
 // IndexSyncer watches managed Secrets and keeps a keyindex.Index in sync with
 // the current set of valid key hashes.
@@ -73,7 +77,7 @@ func apiKeyEventSubject(secret *corev1.Secret) *v1alpha1.APIKey {
 	}
 }
 
-func (s *IndexSyncer) emitEmptyAPIKeyEvent(secret *corev1.Secret) {
+func (s *IndexSyncer) emitWarningEvent(secret *corev1.Secret, reason, message string) {
 	if s.Recorder == nil {
 		return
 	}
@@ -85,10 +89,19 @@ func (s *IndexSyncer) emitEmptyAPIKeyEvent(secret *corev1.Secret) {
 		apiKey,
 		nil,
 		corev1.EventTypeWarning,
-		eventReasonEmptyAPIKey,
-		eventReasonEmptyAPIKey,
-		"Managed Secret %q has no primary API key; authorization index was cleared",
-		secret.Name,
+		reason,
+		reason,
+		"%s",
+		message,
+	)
+}
+
+func (s *IndexSyncer) clearInvalidMetadata(secret *corev1.Secret) {
+	s.KeyIndex.RemoveByNamespace(secret.Namespace)
+	s.emitWarningEvent(
+		secret,
+		eventReasonInvalidKeyMetadata,
+		"Managed Secret has invalid API key expiry metadata; authorization index was cleared",
 	)
 }
 
@@ -108,25 +121,48 @@ func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Res
 	rawKey := string(secret.Data[keyutil.SecretKey])
 	if rawKey == "" {
 		s.KeyIndex.RemoveByNamespace(req.Namespace)
-		s.emitEmptyAPIKeyEvent(&secret)
+		s.emitWarningEvent(
+			&secret,
+			eventReasonEmptyAPIKey,
+			fmt.Sprintf("Managed Secret %q has no primary API key; authorization index was cleared", secret.Name),
+		)
 		return ctrl.Result{}, nil
 	}
 
-	hash := keyutil.HashKey(rawKey)
-	keyID := keyutil.KeyIDFromHash(hash)
+	primaryExpiresAt, err := keyutil.ParsePrimaryExpiry(secret.Annotations)
+	if err != nil {
+		s.clearInvalidMetadata(&secret)
+		return ctrl.Result{}, nil //nolint:nilerr // Invalid metadata is deterministic; deny without retrying.
+	}
 
+	hash := keyutil.HashKey(rawKey)
+	if secret.Annotations[keyutil.PrimaryHashAnnotation] != hash {
+		s.clearInvalidMetadata(&secret)
+		return ctrl.Result{}, nil
+	}
+	keyID := keyutil.KeyIDFromHash(hash)
 	entries := map[string]keyindex.TenantRecord{
 		hash: {
 			Namespace: req.Namespace,
 			KeyID:     keyID,
+			ExpiresAt: primaryExpiresAt,
 		},
 	}
 
-	if prevRaw, ok := secret.Data[keyutil.SecondarySecretKey]; ok && len(prevRaw) > 0 {
-		prevHash := keyutil.HashKey(string(prevRaw))
-		entries[prevHash] = keyindex.TenantRecord{
+	secondaryRaw := secret.Data[keyutil.SecondarySecretKey]
+	if len(secondaryRaw) > 0 {
+		secondaryExpiresAt, err := keyutil.ParseSecondaryExpiry(secret.Annotations)
+		secondaryHash := keyutil.HashKey(string(secondaryRaw))
+		if err != nil ||
+			secret.Annotations[keyutil.SecondaryHashAnnotation] != secondaryHash ||
+			(!primaryExpiresAt.IsZero() && secondaryExpiresAt.After(primaryExpiresAt)) {
+			s.clearInvalidMetadata(&secret)
+			return ctrl.Result{}, nil //nolint:nilerr // Invalid metadata is deterministic; deny without retrying.
+		}
+		entries[secondaryHash] = keyindex.TenantRecord{
 			Namespace: req.Namespace,
-			KeyID:     keyutil.KeyIDFromHash(prevHash),
+			KeyID:     keyutil.KeyIDFromHash(secondaryHash),
+			ExpiresAt: secondaryExpiresAt,
 		}
 	}
 

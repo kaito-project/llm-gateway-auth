@@ -16,6 +16,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,12 +25,31 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
+
+func primaryNeverAnnotations(rawKey string) map[string]string {
+	return map[string]string{
+		keyutil.PrimaryExpiryAnnotation: keyutil.NeverExpires,
+		keyutil.PrimaryHashAnnotation:   keyutil.HashKey(rawKey),
+	}
+}
+
+func primaryAndSecondaryAnnotations(primaryRaw, secondaryRaw string, primary, secondary time.Time) map[string]string {
+	primaryValue, _ := keyutil.FormatExpiry(primary)
+	secondaryValue, _ := keyutil.FormatExpiry(secondary)
+	return map[string]string{
+		keyutil.PrimaryExpiryAnnotation:   primaryValue,
+		keyutil.SecondaryExpiryAnnotation: secondaryValue,
+		keyutil.PrimaryHashAnnotation:     keyutil.HashKey(primaryRaw),
+		keyutil.SecondaryHashAnnotation:   keyutil.HashKey(secondaryRaw),
+	}
+}
 
 func TestSyncReconcile_SecretNotFound(t *testing.T) {
 	s := setupScheme()
@@ -120,8 +140,9 @@ func TestSyncReconcile_SyncsPrimaryKey(t *testing.T) {
 	rawKey := "sk-test-key-12345"
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
+			Name:        "llm-api-key",
+			Namespace:   "team-alpha",
+			Annotations: primaryNeverAnnotations(rawKey),
 		},
 		Data: map[string][]byte{
 			keyutil.SecretKey: []byte(rawKey),
@@ -153,10 +174,13 @@ func TestSyncReconcile_SyncsPrimaryAndSecondaryKey(t *testing.T) {
 
 	rawKey := "sk-primary-key"
 	prevKey := "sk-secondary-key"
+	primaryExpiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
+	secondaryExpiry := primaryExpiry.Add(-time.Hour)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
+			Name:        "llm-api-key",
+			Namespace:   "team-alpha",
+			Annotations: primaryAndSecondaryAnnotations(rawKey, prevKey, primaryExpiry, secondaryExpiry),
 		},
 		Data: map[string][]byte{
 			keyutil.SecretKey:          []byte(rawKey),
@@ -194,8 +218,9 @@ func TestSyncReconcile_ReplacesStaleEntries(t *testing.T) {
 	newKey := "sk-new-key"
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
+			Name:        "llm-api-key",
+			Namespace:   "team-alpha",
+			Annotations: primaryNeverAnnotations(newKey),
 		},
 		Data: map[string][]byte{
 			keyutil.SecretKey: []byte(newKey),
@@ -227,8 +252,9 @@ func TestSyncReconcile_EmptySecondaryKeyIgnored(t *testing.T) {
 	rawKey := "sk-only-primary"
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
+			Name:        "llm-api-key",
+			Namespace:   "team-alpha",
+			Annotations: primaryNeverAnnotations(rawKey),
 		},
 		Data: map[string][]byte{
 			keyutil.SecretKey:          []byte(rawKey),
@@ -256,8 +282,9 @@ func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
 
 	secret1 := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
+			Name:        "llm-api-key",
+			Namespace:   "team-alpha",
+			Annotations: primaryNeverAnnotations("sk-alpha-key"),
 		},
 		Data: map[string][]byte{
 			keyutil.SecretKey: []byte("sk-alpha-key"),
@@ -265,8 +292,9 @@ func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
 	}
 	secret2 := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-beta",
+			Name:        "llm-api-key",
+			Namespace:   "team-beta",
+			Annotations: primaryNeverAnnotations("sk-beta-key"),
 		},
 		Data: map[string][]byte{
 			keyutil.SecretKey: []byte("sk-beta-key"),
@@ -299,6 +327,199 @@ func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
 	rec, ok = idx.Lookup(betaHash)
 	require.True(t, ok, "expected beta key in index")
 	assert.Equal(t, "team-beta", rec.Namespace)
+}
+
+func TestSyncReconcile_InvalidMetadataClearsNamespace(t *testing.T) {
+	primaryExpiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
+	primaryValue, _ := keyutil.FormatExpiry(primaryExpiry)
+	laterSecondaryValue, _ := keyutil.FormatExpiry(primaryExpiry.Add(time.Hour))
+
+	tests := []struct {
+		name        string
+		data        map[string][]byte
+		annotations map[string]string
+	}{
+		{
+			name: "missing primary expiry",
+			data: map[string][]byte{keyutil.SecretKey: []byte("sk-primary")},
+		},
+		{
+			name:        "malformed primary expiry",
+			data:        map[string][]byte{keyutil.SecretKey: []byte("sk-primary")},
+			annotations: map[string]string{keyutil.PrimaryExpiryAnnotation: "tomorrow"},
+		},
+		{
+			name: "missing secondary expiry",
+			data: map[string][]byte{
+				keyutil.SecretKey:          []byte("sk-primary"),
+				keyutil.SecondarySecretKey: []byte("sk-secondary"),
+			},
+			annotations: map[string]string{keyutil.PrimaryExpiryAnnotation: primaryValue},
+		},
+		{
+			name: "secondary never",
+			data: map[string][]byte{
+				keyutil.SecretKey:          []byte("sk-primary"),
+				keyutil.SecondarySecretKey: []byte("sk-secondary"),
+			},
+			annotations: map[string]string{
+				keyutil.PrimaryExpiryAnnotation:   primaryValue,
+				keyutil.SecondaryExpiryAnnotation: keyutil.NeverExpires,
+			},
+		},
+		{
+			name: "secondary later than primary",
+			data: map[string][]byte{
+				keyutil.SecretKey:          []byte("sk-primary"),
+				keyutil.SecondarySecretKey: []byte("sk-secondary"),
+			},
+			annotations: map[string]string{
+				keyutil.PrimaryExpiryAnnotation:   primaryValue,
+				keyutil.SecondaryExpiryAnnotation: laterSecondaryValue,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := setupScheme()
+			idx := keyindex.New()
+			idx.Upsert("stale", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "stale"})
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "llm-api-key",
+					Namespace:   "team-alpha",
+					Annotations: tt.annotations,
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: v1alpha1.GroupVersion.String(),
+						Kind:       "APIKey",
+						Name:       "default",
+						UID:        types.UID("apikey-uid"),
+					}},
+				},
+				Data: tt.data,
+			}
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
+			recorder := events.NewFakeRecorder(10)
+			syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
+
+			_, err := syncer.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(secret)})
+			require.NoError(t, err)
+			assert.Zero(t, idx.Size())
+			requireEvent(t, recorder, "Warning InvalidKeyMetadata Managed Secret has invalid API key expiry metadata; authorization index was cleared")
+		})
+	}
+}
+
+func TestSyncReconcile_KeyMutationWithoutMetadataUpdateFailsClosed(t *testing.T) {
+	primaryExpiry := time.Date(2030, time.January, 2, 0, 0, 0, 0, time.UTC)
+	secondaryExpiry := primaryExpiry.Add(-time.Hour)
+
+	for _, mutate := range []struct {
+		name string
+		key  string
+	}{
+		{name: "primary changed by rolled-back operator", key: keyutil.SecretKey},
+		{name: "secondary changed by rolled-back operator", key: keyutil.SecondarySecretKey},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			primaryRaw := "sk-primary"
+			secondaryRaw := "sk-secondary"
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        keyutil.SecretName,
+					Namespace:   "team-alpha",
+					Annotations: primaryAndSecondaryAnnotations(primaryRaw, secondaryRaw, primaryExpiry, secondaryExpiry),
+				},
+				Data: map[string][]byte{
+					keyutil.SecretKey:          []byte(primaryRaw),
+					keyutil.SecondarySecretKey: []byte(secondaryRaw),
+				},
+			}
+			secret.Data[mutate.key] = []byte("sk-mutated-without-metadata")
+
+			idx := keyindex.New()
+			idx.Upsert("stale", keyindex.TenantRecord{Namespace: secret.Namespace, KeyID: "stale"})
+			c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(secret).Build()
+			syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+			_, err := syncer.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(secret)})
+			require.NoError(t, err)
+			assert.Zero(t, idx.Size())
+		})
+	}
+}
+
+func TestSyncReconcile_StaleSecondaryMetadataWithoutKeyKeepsPrimary(t *testing.T) {
+	primaryRaw := "sk-primary"
+	secondaryExpiry := time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)
+	secondaryValue, err := keyutil.FormatExpiry(secondaryExpiry)
+	require.NoError(t, err)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keyutil.SecretName,
+			Namespace: "team-alpha",
+			Annotations: map[string]string{
+				keyutil.PrimaryExpiryAnnotation:   keyutil.NeverExpires,
+				keyutil.PrimaryHashAnnotation:     keyutil.HashKey(primaryRaw),
+				keyutil.SecondaryExpiryAnnotation: secondaryValue,
+				keyutil.SecondaryHashAnnotation:   keyutil.HashKey("sk-removed-secondary"),
+			},
+		},
+		Data: map[string][]byte{keyutil.SecretKey: []byte(primaryRaw)},
+	}
+	idx := keyindex.New()
+	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(secret).Build()
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+	_, err = syncer.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(secret)})
+	require.NoError(t, err)
+	_, found := idx.Lookup(keyutil.HashKey(primaryRaw))
+	assert.True(t, found)
+	assert.Equal(t, 1, idx.Size())
+}
+
+func TestSyncReconcile_ExpiredRecordAndRelistSafety(t *testing.T) {
+	s := setupScheme()
+	idx := keyindex.New()
+	expiredAt := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
+	expiredValue, err := keyutil.FormatExpiry(expiredAt)
+	require.NoError(t, err)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "llm-api-key",
+			Namespace: "team-alpha",
+			Annotations: map[string]string{
+				keyutil.PrimaryExpiryAnnotation: expiredValue,
+				keyutil.PrimaryHashAnnotation:   keyutil.HashKey("sk-expired"),
+			},
+		},
+		Data: map[string][]byte{keyutil.SecretKey: []byte("sk-expired")},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(secret)}
+
+	_, err = syncer.Reconcile(context.Background(), request)
+	require.NoError(t, err)
+	record, ok := idx.Lookup(keyutil.HashKey("sk-expired"))
+	require.True(t, ok, "expired records may remain indexed for request-time denial")
+	assert.Equal(t, expiredAt, record.ExpiresAt)
+
+	require.NoError(t, c.Get(context.Background(), request.NamespacedName, secret))
+	secret.Annotations[keyutil.PrimaryExpiryAnnotation] = "invalid"
+	require.NoError(t, c.Update(context.Background(), secret))
+	_, err = syncer.Reconcile(context.Background(), request)
+	require.NoError(t, err)
+	assert.Zero(t, idx.Size(), "invalid relist must atomically remove stale records")
+
+	require.NoError(t, c.Get(context.Background(), request.NamespacedName, secret))
+	secret.Annotations[keyutil.PrimaryExpiryAnnotation] = expiredValue
+	require.NoError(t, c.Update(context.Background(), secret))
+	_, err = syncer.Reconcile(context.Background(), request)
+	require.NoError(t, err)
+	_, ok = idx.Lookup(keyutil.HashKey("sk-expired"))
+	assert.True(t, ok, "a later valid relist should restore the record")
 }
 
 func TestAPIKeyEventSubject(t *testing.T) {

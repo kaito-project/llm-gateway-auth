@@ -15,6 +15,7 @@ package keyindex
 
 import (
 	"testing"
+	"time"
 )
 
 func TestNew(t *testing.T) {
@@ -26,7 +27,8 @@ func TestNew(t *testing.T) {
 
 func TestUpsertAndLookup(t *testing.T) {
 	idx := New()
-	rec := TenantRecord{Namespace: "team-alpha", KeyID: "a3f7c291"}
+	expiresAt := time.Date(2026, time.October, 8, 12, 0, 0, 0, time.UTC)
+	rec := TenantRecord{Namespace: "team-alpha", KeyID: "a3f7c291", ExpiresAt: expiresAt}
 	idx.Upsert("hash1", rec)
 
 	got, ok := idx.Lookup("hash1")
@@ -38,6 +40,9 @@ func TestUpsertAndLookup(t *testing.T) {
 	}
 	if got.KeyID != "a3f7c291" {
 		t.Errorf("expected keyID a3f7c291, got %s", got.KeyID)
+	}
+	if !got.ExpiresAt.Equal(expiresAt) {
+		t.Errorf("expected expiry %s, got %s", expiresAt, got.ExpiresAt)
 	}
 }
 

@@ -15,6 +15,7 @@ package keyindex
 
 import (
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -24,6 +25,9 @@ import (
 type TenantRecord struct {
 	Namespace string
 	KeyID     string
+	// ExpiresAt is zero only for a primary key whose Secret metadata explicitly
+	// declared that it never expires.
+	ExpiresAt time.Time
 }
 
 // Index is a concurrency-safe in-memory index mapping SHA-256 key hashes

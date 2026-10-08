@@ -18,7 +18,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"time"
 )
 
 const (
@@ -27,6 +29,20 @@ const (
 	SecretKey          = "apiKey"
 	SecondarySecretKey = "secondaryApiKey"
 	SingletonName      = "default"
+
+	PrimaryExpiryAnnotation   = "kaito.sh/primary-key-expires-at"
+	SecondaryExpiryAnnotation = "kaito.sh/secondary-key-expires-at"
+	PrimaryHashAnnotation     = "kaito.sh/primary-key-hash"
+	SecondaryHashAnnotation   = "kaito.sh/secondary-key-hash"
+	RotationRequestAnnotation = "kaito.sh/rotation-request"
+	LastRotatedAtAnnotation   = "kaito.sh/last-rotated-at"
+	NeverExpires              = "never"
+)
+
+var (
+	ErrMissingExpiry   = errors.New("expiry metadata is missing")
+	ErrInvalidExpiry   = errors.New("expiry metadata is invalid")
+	ErrNeverNotAllowed = errors.New("never is not allowed for this expiry")
 )
 
 // GenerateResult holds the output of key generation.
@@ -70,6 +86,58 @@ func KeyIDFromHash(hashHex string) string {
 		return hashHex[:8]
 	}
 	return hashHex
+}
+
+// FormatExpiry formats a finite expiry as a canonical UTC RFC3339Nano value.
+func FormatExpiry(expiresAt time.Time) (string, error) {
+	if expiresAt.IsZero() {
+		return "", fmt.Errorf("%w: zero timestamp", ErrInvalidExpiry)
+	}
+	return expiresAt.UTC().Format(time.RFC3339Nano), nil
+}
+
+// FormatPrimaryExpiry formats a primary expiry. A nil expiry is represented by
+// the explicit NeverExpires sentinel; finite zero values are rejected.
+func FormatPrimaryExpiry(expiresAt *time.Time) (string, error) {
+	if expiresAt == nil {
+		return NeverExpires, nil
+	}
+	return FormatExpiry(*expiresAt)
+}
+
+// ParseExpiry parses a canonical finite UTC RFC3339Nano expiry. The never
+// sentinel is accepted only when allowNever is true, and is represented by a
+// zero time in the returned value.
+func ParseExpiry(value string, allowNever bool) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, ErrMissingExpiry
+	}
+	if value == NeverExpires {
+		if !allowNever {
+			return time.Time{}, ErrNeverNotAllowed
+		}
+		return time.Time{}, nil
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || expiresAt.IsZero() {
+		return time.Time{}, fmt.Errorf("%w: expected a non-zero UTC RFC3339Nano timestamp", ErrInvalidExpiry)
+	}
+	canonical := expiresAt.UTC().Format(time.RFC3339Nano)
+	if value != canonical {
+		return time.Time{}, fmt.Errorf("%w: expected canonical UTC value %q", ErrInvalidExpiry, canonical)
+	}
+	return expiresAt, nil
+}
+
+// ParsePrimaryExpiry reads and parses primary expiry metadata from annotations.
+func ParsePrimaryExpiry(annotations map[string]string) (time.Time, error) {
+	return ParseExpiry(annotations[PrimaryExpiryAnnotation], true)
+}
+
+// ParseSecondaryExpiry reads and parses finite secondary expiry metadata from annotations.
+func ParseSecondaryExpiry(annotations map[string]string) (time.Time, error) {
+	return ParseExpiry(annotations[SecondaryExpiryAnnotation], false)
 }
 
 // ValidateKeyFormat checks whether a key matches the expected format.
