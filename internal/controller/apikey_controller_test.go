@@ -677,6 +677,7 @@ func TestReconcile_CorruptSecretRegenerates(t *testing.T) {
 }
 
 func newDueRotationObjects(apiKeyUID types.UID) (*v1alpha1.APIKey, *corev1.Secret) {
+	rotateAt := metav1.NewTime(time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC))
 	apiKey := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "default",
@@ -687,7 +688,7 @@ func newDueRotationObjects(apiKeyUID types.UID) (*v1alpha1.APIKey, *corev1.Secre
 		Spec: v1alpha1.APIKeySpec{
 			Prefix: "sk-",
 			Rotation: &v1alpha1.RotationSpec{
-				RotateAt: &metav1.Time{Time: time.Now().Add(-time.Minute)},
+				RotateAt: &rotateAt,
 			},
 		},
 		Status: v1alpha1.APIKeyStatus{
