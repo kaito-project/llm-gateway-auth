@@ -111,8 +111,8 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 		return denyResponse(codes.Unauthenticated, "invalid API key in "+credentialHeader+" header"), nil
 	}
 
-	// 4. Enforce expiry immediately after lookup. A zero deadline is reserved
-	// for primary records parsed from an explicit "never" annotation.
+	// 4. Enforce expiry immediately after lookup. A zero deadline represents a
+	// matched primary status record with no expiry.
 	now := s.now()
 	if !rec.ExpiresAt.IsZero() && !now.Before(rec.ExpiresAt) {
 		s.recordDeny("deny_expired_key", start, rec.KeyID, rec.Namespace, sourceIP, path)

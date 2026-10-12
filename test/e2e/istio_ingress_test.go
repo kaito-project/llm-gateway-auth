@@ -58,14 +58,15 @@ func TestIstioIngressAuthz(t *testing.T) {
 	host := namespaceHost(testNS)
 	applyIstioResources(t, testNS, host)
 
-	// Port-forward to the Istio ingress gateway.
+	// Wait for the AuthorizationPolicy, Gateway, and VirtualService to
+	// propagate through Envoy and for the ext_authz index to sync the new key.
+	// kubectl opens its local port-forward socket before the remote listener is
+	// ready, and an early readiness connection makes it exit permanently.
+	time.Sleep(indexSyncWait + 10*time.Second)
+
+	// Port-forward only after Envoy has created the ingress listener.
 	gwAddr := portForwardIngressGateway(t)
 	t.Logf("Ingress gateway forwarded to %s", gwAddr)
-
-	// Allow time for the AuthorizationPolicy, Gateway, and VirtualService
-	// to propagate through Envoy configuration and for the ext_authz index
-	// to sync the new key.
-	time.Sleep(indexSyncWait + 10*time.Second)
 
 	// ── Sub-tests ───────────────────────────────────────────────────────
 

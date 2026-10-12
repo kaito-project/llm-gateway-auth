@@ -11,174 +11,241 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package controller provides a IndexSyncer controller that watches Secret resources and
-// keeps an in-memory key index up to date. This component is intended to be
-// the foundation of an Istio gateway authz plugin.
+// Package controller provides an IndexSyncer controller that watches APIKey and
+// Secret resources and keeps an in-memory key index up to date.
 package controller
 
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
-const (
-	eventReasonEmptyAPIKey        = "EmptyAPIKey"
-	eventReasonInvalidKeyMetadata = "InvalidKeyMetadata"
-)
+const eventReasonInvalidAPIKeyState = "InvalidAPIKeyState"
 
-// IndexSyncer watches managed Secrets and keeps a keyindex.Index in sync with
-// the current set of valid key hashes.
+// IndexSyncer watches APIKeys and their declared Secrets and keeps a
+// keyindex.Index in sync with coherent Active APIKey status.
 type IndexSyncer struct {
 	client.Client
 	KeyIndex *keyindex.Index
 	Recorder events.EventRecorder
 }
 
-func apiKeyOwnerReference(obj metav1.Object) *metav1.OwnerReference {
-	refs := obj.GetOwnerReferences()
-	for i := range refs {
-		ref := &refs[i]
-		if ref.APIVersion == v1alpha1.GroupVersion.String() && ref.Kind == "APIKey" {
-			return ref
-		}
-	}
-	return nil
+type statusKey struct {
+	keyID     string
+	expiresAt time.Time
+	matched   bool
 }
 
-func apiKeyEventSubject(secret *corev1.Secret) *v1alpha1.APIKey {
-	owner := apiKeyOwnerReference(secret)
-	if owner == nil {
-		return nil
-	}
-	return &v1alpha1.APIKey{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: v1alpha1.GroupVersion.String(),
-			Kind:       "APIKey",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      owner.Name,
-			Namespace: secret.Namespace,
-			UID:       owner.UID,
-		},
-	}
-}
-
-func (s *IndexSyncer) emitWarningEvent(secret *corev1.Secret, reason, message string) {
-	if s.Recorder == nil {
-		return
-	}
-	apiKey := apiKeyEventSubject(secret)
-	if apiKey == nil {
+func (s *IndexSyncer) emitInvalidStateEvent(apiKey *v1alpha1.APIKey, message string) {
+	if s.Recorder == nil || apiKey == nil {
 		return
 	}
 	s.Recorder.Eventf(
 		apiKey,
 		nil,
 		corev1.EventTypeWarning,
-		reason,
-		reason,
+		eventReasonInvalidAPIKeyState,
+		eventReasonInvalidAPIKeyState,
 		"%s",
 		message,
 	)
 }
 
-func (s *IndexSyncer) clearInvalidMetadata(secret *corev1.Secret) {
-	s.KeyIndex.RemoveByNamespace(secret.Namespace)
-	s.emitWarningEvent(
-		secret,
-		eventReasonInvalidKeyMetadata,
-		"Managed Secret has invalid API key expiry metadata; authorization index was cleared",
-	)
+func (s *IndexSyncer) clearInvalidState(apiKey *v1alpha1.APIKey, namespace, message string) {
+	s.KeyIndex.RemoveByNamespace(namespace)
+	s.emitInvalidStateEvent(apiKey, message)
 }
 
 func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	apiKeyName := types.NamespacedName{Namespace: req.Namespace, Name: keyutil.SingletonName}
 
-	var secret corev1.Secret
-	if err := s.Get(ctx, req.NamespacedName, &secret); err != nil {
-		if errors.IsNotFound(err) {
-			s.KeyIndex.RemoveByNamespace(req.Namespace)
-			logger.Info("Managed Secret removed, cleared index", "namespace", req.Namespace)
+	var apiKey v1alpha1.APIKey
+	if err := s.Get(ctx, apiKeyName, &apiKey); err != nil {
+		s.KeyIndex.RemoveByNamespace(req.Namespace)
+		if apierrors.IsNotFound(err) {
+			logger.Info("APIKey removed, cleared index", "namespace", req.Namespace)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
-	rawKey := string(secret.Data[keyutil.SecretKey])
-	if rawKey == "" {
+	if !apiKey.DeletionTimestamp.IsZero() {
 		s.KeyIndex.RemoveByNamespace(req.Namespace)
-		s.emitWarningEvent(
-			&secret,
-			eventReasonEmptyAPIKey,
-			fmt.Sprintf("Managed Secret %q has no primary API key; authorization index was cleared", secret.Name),
-		)
+		return ctrl.Result{}, nil
+	}
+	if apiKey.Status.Phase != v1alpha1.PhaseActive {
+		s.KeyIndex.RemoveByNamespace(req.Namespace)
+		return ctrl.Result{}, nil
+	}
+	if apiKey.Status.SecretRef == nil || apiKey.Status.SecretRef.Name == "" {
+		s.clearInvalidState(&apiKey, req.Namespace, "APIKey status has no declared Secret; authorization index was cleared")
 		return ctrl.Result{}, nil
 	}
 
-	primaryExpiresAt, err := keyutil.ParsePrimaryExpiry(secret.Annotations)
+	secretName := types.NamespacedName{Namespace: req.Namespace, Name: apiKey.Status.SecretRef.Name}
+	var secret corev1.Secret
+	if err := s.Get(ctx, secretName, &secret); err != nil {
+		s.clearInvalidState(&apiKey, req.Namespace, "APIKey declared Secret is unavailable; authorization index was cleared")
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	entries, err := buildNamespaceEntries(&apiKey, &secret)
 	if err != nil {
-		s.clearInvalidMetadata(&secret)
-		return ctrl.Result{}, nil //nolint:nilerr // Invalid metadata is deterministic; deny without retrying.
-	}
-
-	hash := keyutil.HashKey(rawKey)
-	if secret.Annotations[keyutil.PrimaryHashAnnotation] != hash {
-		s.clearInvalidMetadata(&secret)
+		s.clearInvalidState(&apiKey, req.Namespace, fmt.Sprintf("APIKey status and declared Secret are incoherent: %v; authorization index was cleared", err))
 		return ctrl.Result{}, nil
-	}
-	keyID := keyutil.KeyIDFromHash(hash)
-	entries := map[string]keyindex.TenantRecord{
-		hash: {
-			Namespace: req.Namespace,
-			KeyID:     keyID,
-			ExpiresAt: primaryExpiresAt,
-		},
-	}
-
-	secondaryRaw := secret.Data[keyutil.SecondarySecretKey]
-	if len(secondaryRaw) > 0 {
-		secondaryExpiresAt, err := keyutil.ParseSecondaryExpiry(secret.Annotations)
-		secondaryHash := keyutil.HashKey(string(secondaryRaw))
-		if err != nil ||
-			secret.Annotations[keyutil.SecondaryHashAnnotation] != secondaryHash ||
-			(!primaryExpiresAt.IsZero() && secondaryExpiresAt.After(primaryExpiresAt)) {
-			s.clearInvalidMetadata(&secret)
-			return ctrl.Result{}, nil //nolint:nilerr // Invalid metadata is deterministic; deny without retrying.
-		}
-		entries[secondaryHash] = keyindex.TenantRecord{
-			Namespace: req.Namespace,
-			KeyID:     keyutil.KeyIDFromHash(secondaryHash),
-			ExpiresAt: secondaryExpiresAt,
-		}
 	}
 
 	s.KeyIndex.SetNamespaceKeys(req.Namespace, entries)
-	logger.Info("Index synced from Secret", "namespace", req.Namespace, "keyID", keyID)
+	logger.Info("Index synced from APIKey status and declared Secret", "namespace", req.Namespace, "keys", len(entries))
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager registers the IndexSyncer with the given manager, watching
-// only managed Secret objects.
-func (s *IndexSyncer) SetupWithManager(mgr ctrl.Manager) error {
-	managedSecretPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		return apiKeyOwnerReference(obj) != nil
-	})
+func buildNamespaceEntries(apiKey *v1alpha1.APIKey, secret *corev1.Secret) (map[string]keyindex.TenantRecord, error) {
+	if !secret.DeletionTimestamp.IsZero() {
+		return nil, fmt.Errorf("declared Secret is being deleted")
+	}
+	if apiKey.Status.SecretRef == nil || secret.Name != apiKey.Status.SecretRef.Name || secret.Namespace != apiKey.Namespace {
+		return nil, fmt.Errorf("declared Secret reference does not match the observed Secret")
+	}
 
+	owner := metav1.GetControllerOf(secret)
+	if owner == nil ||
+		owner.APIVersion != v1alpha1.GroupVersion.String() ||
+		owner.Kind != "APIKey" ||
+		owner.Name != keyutil.SingletonName ||
+		owner.UID == "" ||
+		apiKey.UID == "" ||
+		owner.UID != apiKey.UID {
+		return nil, fmt.Errorf("declared Secret does not have the expected APIKey controller owner")
+	}
+
+	if apiKey.Status.Primary == nil || apiKey.Status.Primary.KeyID == "" {
+		return nil, fmt.Errorf("primary status is missing a key ID")
+	}
+	primaryExpiry, err := statusExpiry(apiKey.Status.Primary, true)
+	if err != nil {
+		return nil, fmt.Errorf("invalid primary status: %w", err)
+	}
+
+	statusKeys := []*statusKey{{
+		keyID:     apiKey.Status.Primary.KeyID,
+		expiresAt: primaryExpiry,
+	}}
+	if apiKey.Status.Secondary != nil {
+		if apiKey.Status.Secondary.KeyID == "" {
+			return nil, fmt.Errorf("secondary status is missing a key ID")
+		}
+		if apiKey.Status.Secondary.KeyID == apiKey.Status.Primary.KeyID {
+			return nil, fmt.Errorf("primary and secondary status have the same key ID")
+		}
+		secondaryExpiry, err := statusExpiry(apiKey.Status.Secondary, false)
+		if err != nil {
+			return nil, fmt.Errorf("invalid secondary status: %w", err)
+		}
+		statusKeys = append(statusKeys, &statusKey{
+			keyID:     apiKey.Status.Secondary.KeyID,
+			expiresAt: secondaryExpiry,
+		})
+	}
+
+	primaryRaw := secret.Data[keyutil.SecretKey]
+	if len(primaryRaw) == 0 {
+		return nil, fmt.Errorf("declared Secret has no primary key")
+	}
+
+	secretKeys := [][]byte{primaryRaw}
+	if secondaryRaw := secret.Data[keyutil.SecondarySecretKey]; len(secondaryRaw) > 0 {
+		secretKeys = append(secretKeys, secondaryRaw)
+	}
+
+	entries := make(map[string]keyindex.TenantRecord, len(secretKeys))
+	seenKeyIDs := make(map[string]struct{}, len(secretKeys))
+	for _, rawKey := range secretKeys {
+		hash := keyutil.HashKey(string(rawKey))
+		keyID := keyutil.KeyIDFromHash(hash)
+		if _, ok := entries[hash]; ok {
+			return nil, fmt.Errorf("declared Secret contains duplicate key material")
+		}
+		if _, ok := seenKeyIDs[keyID]; ok {
+			return nil, fmt.Errorf("declared Secret contains ambiguous key IDs")
+		}
+		seenKeyIDs[keyID] = struct{}{}
+
+		var match *statusKey
+		for _, candidate := range statusKeys {
+			if candidate.keyID != keyID {
+				continue
+			}
+			if match != nil || candidate.matched {
+				return nil, fmt.Errorf("key ID %q has an ambiguous status match", keyID)
+			}
+			match = candidate
+		}
+		if match == nil {
+			return nil, fmt.Errorf("key ID %q has no status match", keyID)
+		}
+		match.matched = true
+		entries[hash] = keyindex.TenantRecord{
+			Namespace: apiKey.Namespace,
+			KeyID:     match.keyID,
+			ExpiresAt: match.expiresAt,
+		}
+	}
+
+	if !statusKeys[0].matched {
+		return nil, fmt.Errorf("primary status has no Secret key match")
+	}
+	return entries, nil
+}
+
+func statusExpiry(status *v1alpha1.KeyStatus, allowNever bool) (time.Time, error) {
+	if status.ExpiresAt == nil {
+		if allowNever {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("expiry is missing")
+	}
+	if status.ExpiresAt.IsZero() {
+		return time.Time{}, fmt.Errorf("expiry is zero")
+	}
+	return status.ExpiresAt.Time, nil
+}
+
+func secretToAPIKey(_ context.Context, obj client.Object) []reconcile.Request {
+	owner := metav1.GetControllerOf(obj)
+	if owner == nil || owner.APIVersion != v1alpha1.GroupVersion.String() || owner.Kind != "APIKey" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: obj.GetNamespace(),
+		Name:      keyutil.SingletonName,
+	}}}
+}
+
+// SetupWithManager registers the IndexSyncer with the Manager.
+func (s *IndexSyncer) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Secret{}, builder.WithPredicates(managedSecretPredicate)).
+		For(&v1alpha1.APIKey{}).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(secretToAPIKey)).
 		Complete(s)
 }

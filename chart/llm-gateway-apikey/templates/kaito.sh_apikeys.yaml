@@ -163,8 +163,9 @@ spec:
                 format: date-time
                 type: string
               lastSyncedAt:
-                description: LastSyncedAt is the last time the controller successfully
-                  synced to the in-memory index.
+                description: |-
+                  LastSyncedAt is the last time the operator marked the key status active
+                  and ready.
                 format: date-time
                 type: string
               phase:
@@ -179,8 +180,10 @@ spec:
                   key.
                 properties:
                   expiresAt:
-                    description: ExpiresAt is when the key stops being valid (rotation
-                      time + gracePeriod).
+                    description: |-
+                      ExpiresAt is the absolute instant at which the key stops being valid.
+                      It may be omitted only for a non-expiring primary key; secondary keys have
+                      a finite deadline.
                     format: date-time
                     type: string
                   keyID:
@@ -194,8 +197,10 @@ spec:
                   period after rotation.
                 properties:
                   expiresAt:
-                    description: ExpiresAt is when the key stops being valid (rotation
-                      time + gracePeriod).
+                    description: |-
+                      ExpiresAt is the absolute instant at which the key stops being valid.
+                      It may be omitted only for a non-expiring primary key; secondary keys have
+                      a finite deadline.
                     format: date-time
                     type: string
                   keyID:

@@ -25,8 +25,7 @@ import (
 type TenantRecord struct {
 	Namespace string
 	KeyID     string
-	// ExpiresAt is zero only for a primary key whose Secret metadata explicitly
-	// declared that it never expires.
+	// ExpiresAt is zero only when the matched primary status has no expiry.
 	ExpiresAt time.Time
 }
 

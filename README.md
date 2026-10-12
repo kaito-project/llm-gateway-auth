@@ -28,10 +28,16 @@ Ingress → Istio Gateway
 The project ships three components:
 
 - **apikey-operator**: Reconciles `APIKey` CRs — generates and rotates keys, manages backing `Secret`s, expires keys, and serves the validating admission webhook.
-- **apikey-authz**: Envoy `ext_authz` gRPC server that validates API keys using an in-memory index synced from managed `Secret`s.
+- **apikey-authz**: Envoy `ext_authz` gRPC server that validates API keys using an in-memory index joined from active `APIKey` status and each resource's declared managed `Secret`.
 - **azure-authz**: Envoy `ext_authz` gRPC server that authorizes Azure AD JWT principals via Kubernetes SAR, with an LRU cache.
 
 See [docs/architecture.md](docs/architecture.md) for the full cluster topology including namespaces, RBAC, and NetworkPolicies.
+
+### API-key expiry and index coherence
+
+`apikey-authz` watches both `APIKey` resources and Secrets. For each namespace, it reads raw credentials only from the Secret named by `status.secretRef` and reads key identity and absolute expiry from `status.primaryKey` and `status.secondaryKey`. A credential is denied at the exact persisted deadline (`now >= expiresAt`); deletion of the Secret by the operator is cleanup rather than the authorization boundary.
+
+The join uses the existing eight-hex-character (32-bit) `keyID`, while the in-memory credential lookup remains keyed by the full SHA-256 hash. Duplicate or ambiguous IDs, an unexpected owner reference, and any present Secret key without a unique status match clear the whole namespace from the index. Secret-first lifecycle updates can therefore cause a brief denial while status catches up, but cannot retain a matched subset from mixed generations or allow a key past its deadline. Because the status join is only 32 bits, it is not a cryptographic binding to the Secret value; write access to the managed Secret is therefore trusted. This model adds no Secret metadata protocol or new CRD field.
 
 ## Getting Started
 
@@ -63,31 +69,6 @@ make helm-uninstall
 ```
 
 Chart values are documented in [chart/llm-gateway-apikey/values.yaml](chart/llm-gateway-apikey/values.yaml).
-
-### Upgrading expiry enforcement
-
-Roll out the API-key operator before the API-key authz component. The operator
-backfills expiry deadlines and key-hash bindings on existing owned Secrets; the
-authz component strictly requires this metadata to match the key bytes and fails
-closed when it is missing, invalid, or mismatched.
-
-1. Deploy the new `apikey-operator` and wait for its rollout to complete.
-2. Confirm active managed Secrets have `kaito.sh/primary-key-expires-at` and
-   `kaito.sh/primary-key-hash`. When secondary key data exists, also confirm
-   `kaito.sh/secondary-key-expires-at` and `kaito.sh/secondary-key-hash`.
-3. Deploy the new `apikey-authz` component.
-
-If both components are upgraded simultaneously, new authz replicas can observe
-a legacy Secret before the operator backfills it. Requests using that Secret
-will be denied transiently until reconciliation completes; this is intentional
-fail-closed behavior.
-
-Rolling back only the operator can leave the fixed authz component observing key
-bytes written by old code without matching hash bindings. Those credentials are
-denied until a fixed operator reconciles or replaces the Secret. Old operators
-may remove secondary key bytes without removing the newer secondary annotations;
-the authz component ignores that stale secondary metadata and continues to use a
-valid, correctly bound primary key.
 
 ## Contributing
 

@@ -16,7 +16,6 @@ package keyutil
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,50 +60,4 @@ func TestKeyIDFromHash(t *testing.T) {
 	hash := "a3f7c2913456789abcdef0123456789abcdef0123456789abcdef0123456789a"
 	keyID := KeyIDFromHash(hash)
 	assert.Equal(t, "a3f7c291", keyID)
-}
-
-func TestExpiryMetadataRoundTrip(t *testing.T) {
-	expiresAt := time.Date(2026, time.October, 8, 12, 34, 56, 123456789, time.FixedZone("offset", -7*60*60))
-	formatted, err := FormatExpiry(expiresAt)
-	require.NoError(t, err)
-	assert.Equal(t, "2026-10-08T19:34:56.123456789Z", formatted)
-
-	parsed, err := ParseExpiry(formatted, false)
-	require.NoError(t, err)
-	assert.Equal(t, expiresAt.UTC(), parsed)
-}
-
-func TestPrimaryNeverExpiry(t *testing.T) {
-	formatted, err := FormatPrimaryExpiry(nil)
-	require.NoError(t, err)
-	assert.Equal(t, NeverExpires, formatted)
-
-	parsed, err := ParsePrimaryExpiry(map[string]string{PrimaryExpiryAnnotation: formatted})
-	require.NoError(t, err)
-	assert.True(t, parsed.IsZero())
-
-	_, err = ParseSecondaryExpiry(map[string]string{SecondaryExpiryAnnotation: NeverExpires})
-	assert.ErrorIs(t, err, ErrNeverNotAllowed)
-}
-
-func TestExpiryMetadataFailsClosed(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-	}{
-		{name: "missing"},
-		{name: "malformed", value: "tomorrow"},
-		{name: "zero", value: time.Time{}.UTC().Format(time.RFC3339Nano)},
-		{name: "non-UTC", value: "2026-10-08T12:00:00-07:00"},
-		{name: "non-canonical", value: "2026-10-08T12:00:00.000Z"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseExpiry(tt.value, false)
-			require.Error(t, err)
-		})
-	}
-
-	_, err := FormatExpiry(time.Time{})
-	assert.ErrorIs(t, err, ErrInvalidExpiry)
 }

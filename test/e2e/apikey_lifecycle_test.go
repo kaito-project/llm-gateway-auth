@@ -17,7 +17,7 @@
 //
 // This file tests the full API key lifecycle:
 //   - Create APIKey CR → operator creates Secret with the raw key
-//   - IndexSyncer populates the in-memory index from the Secret
+//   - IndexSyncer joins APIKey status with the declared Secret in memory
 //   - gRPC ext_authz Check: allow with correct key+host, deny otherwise
 //
 // Prerequisites:
@@ -39,7 +39,6 @@
 package e2e
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +58,8 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	testNS := createNamespace(t, "e2e-apikey")
 	_ = createAPIKey(t, testNS, "720h")
 
-	// Wait for the operator to create the Secret.
+	// Authorization requires coherent Active status and the declared Secret.
+	waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseActive, defaultTimeout)
 	sec := waitForSecret(t, testNS, apiKeySecret, defaultTimeout)
 	rawKey := string(sec.Data["apiKey"])
 	assert.NotEmpty(t, rawKey, "Secret should contain an apiKey")
@@ -220,28 +220,4 @@ func TestAPIKeyExpiry(t *testing.T) {
 	assertDenied(t, authzClient, makeCheckRequest(host, "Bearer "+rawKey, "/v1/chat/completions"))
 	time.Sleep(indexSyncWait)
 	assertDenied(t, authzClient, makeCheckRequest(host, "Bearer "+rawKey, "/v1/chat/completions"))
-}
-
-func TestAPIKeyAuthzEmptyKeyEvent(t *testing.T) {
-	testNS := createNamespace(t, "e2e-empty-key-event")
-	_ = createAPIKey(t, testNS, "720h")
-	apiKey := waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseActive, defaultTimeout)
-	waitForSecret(t, testNS, apiKeySecret, defaultTimeout)
-
-	emptySecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "empty-api-key-event",
-			Namespace: testNS,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(apiKey, v1alpha1.GroupVersion.WithKind("APIKey")),
-			},
-		},
-		Data: map[string][]byte{"apiKey": []byte{}},
-	}
-	require.NoError(t, k8sClient.Create(ctx, emptySecret))
-	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), emptySecret) })
-
-	event := waitForAPIKeyEvent(t, apiKey, corev1.EventTypeWarning, "EmptyAPIKey", "apikey-authz", defaultTimeout)
-	assert.Equal(t, "EmptyAPIKey", event.Action)
-	assert.Contains(t, event.Note, `Managed Secret "empty-api-key-event" has no primary API key`)
 }

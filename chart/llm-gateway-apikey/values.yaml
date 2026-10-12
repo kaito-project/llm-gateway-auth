@@ -68,8 +68,8 @@ operator:
   webhookPort: 9443
 
 # ── apikey-authz ────────────────────────────────────────────────────
-# Watches managed Secrets (IndexSyncer) and serves the API-key ext_authz gRPC
-# endpoint consumed by Istio's ingress gateway.
+# Joins Active APIKey status with each declared managed Secret (IndexSyncer) and
+# serves the API-key ext_authz gRPC endpoint consumed by Istio's ingress gateway.
 authz:
   image:
     repository: ""
