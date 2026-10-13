@@ -25,7 +25,7 @@ NAMESPACE ?= llm-gateway
 CONTAINER_RUNTIME ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
 USE_EXISTING_CLUSTER ?= true
 
-.PHONY: all build test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-package helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-azure-authz image-build-all image-push-operator image-push-authz image-push-azure-authz kind-load-operator kind-load-authz kind-load-azure-authz kind-load-all docker-buildx
+.PHONY: all build test chart-test lint fmt vet generate manifests image-build image-push install uninstall deploy helm-install helm-package helm-upgrade helm-uninstall helm-template kind-create kind-delete setup-test-env teardown-test-env kind-load image-build-operator image-build-authz image-build-azure-authz image-build-all image-push-operator image-push-authz image-push-azure-authz kind-load-operator kind-load-authz kind-load-azure-authz kind-load-all docker-buildx
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -105,6 +105,10 @@ fmt: ## Run go fmt against code.
 .PHONY: test
 test: ## Run unit tests.
 	go test ./... -coverprofile=cover.out -count=1
+
+.PHONY: chart-test
+chart-test: ## Validate Helm chart rendering.
+	hack/test-chart-render.sh
 
 .PHONY: e2e-test
 e2e-test: ## Run e2e tests against the kind cluster (requires: make kind-create).

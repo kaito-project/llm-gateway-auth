@@ -143,13 +143,6 @@ istio:
     # to forward JWT claims.
     metadataContextNamespaces: []
 
-  # Per-virtual-host ExtAuthzPerRoute override that explicitly passes the
-  # workload namespace to apikey-authz via context_extensions. Enable when
-  # the gateway's Host header does not encode the namespace (e.g. localhost
-  # during port-forward, or public front-door hostnames).
-  extAuthzPerRoute:
-    enabled: false
-
   # Inject Istio sidecar into the operator pod.
   # The authz pod always gets a sidecar (needed for mTLS).
   injectOperatorSidecar: false
