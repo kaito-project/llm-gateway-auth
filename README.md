@@ -43,7 +43,7 @@ The join uses the existing eight-hex-character (32-bit) `keyID`, while the in-me
 
 ### Prerequisites
 
-- Go 1.26+
+- Go 1.27+
 - `kubectl`, `helm`, `kind` (for local testing)
 - Docker or Podman
 - An Istio-enabled Kubernetes cluster for end-to-end deployment. The charts do
