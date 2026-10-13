@@ -26,6 +26,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Run chart tests
+        run: make chart-test
+
       - name: Run unit tests
         run: make test
 
