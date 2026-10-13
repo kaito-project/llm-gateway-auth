@@ -26,6 +26,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc/codes"
+	"k8s.io/utils/clock"
 
 	"github.com/kaito-project/llm-gateway-auth/internal/authz"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
@@ -51,14 +52,20 @@ type Server struct {
 	authv3.UnimplementedAuthorizationServer
 	keyIndex *keyindex.Index
 	logger   *zap.Logger
+	clock    clock.PassiveClock
 }
 
 // NewServer creates a new ext_authz gRPC server.
-func NewServer(idx *keyindex.Index, logger *zap.Logger) *Server {
+func NewServer(idx *keyindex.Index, logger *zap.Logger, passiveClock clock.PassiveClock) *Server {
 	return &Server{
 		keyIndex: idx,
 		logger:   logger,
+		clock:    passiveClock,
 	}
+}
+
+func (s *Server) now() time.Time {
+	return s.clock.Now()
 }
 
 // Check implements envoy.service.auth.v3.Authorization.Check.
@@ -104,13 +111,21 @@ func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.C
 		return denyResponse(codes.Unauthenticated, "invalid API key in "+credentialHeader+" header"), nil
 	}
 
-	// 4. Check gateway namespace authorization
+	// 4. Enforce expiry immediately after lookup. A zero deadline represents a
+	// matched primary status record with no expiry.
+	now := s.now()
+	if !rec.ExpiresAt.IsZero() && !now.Before(rec.ExpiresAt) {
+		s.recordDeny("deny_expired_key", start, rec.KeyID, rec.Namespace, sourceIP, path)
+		return denyResponse(codes.Unauthenticated, "invalid API key in "+credentialHeader+" header"), nil
+	}
+
+	// 5. Check gateway namespace authorization
 	if rec.Namespace != gatewayNamespace {
 		s.recordDeny("deny_unauthorized_gateway", start, rec.KeyID, rec.Namespace, sourceIP, path)
 		return denyResponse(codes.PermissionDenied, "API key not authorized for this gateway"), nil
 	}
 
-	// 5. Allow with tenant headers
+	// 6. Allow with tenant headers
 	duration := time.Since(start)
 	checkDuration.WithLabelValues("allow").Observe(duration.Seconds())
 

@@ -90,7 +90,9 @@ type KeyStatus struct {
 	// KeyID of the key.
 	KeyID string `json:"keyID"`
 
-	// ExpiresAt is when the key stops being valid (rotation time + gracePeriod).
+	// ExpiresAt is the absolute instant at which the key stops being valid.
+	// It may be omitted only for a non-expiring primary key; secondary keys have
+	// a finite deadline.
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 }
 
@@ -121,7 +123,8 @@ type APIKeyStatus struct {
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// LastSyncedAt is the last time the controller successfully synced to the in-memory index.
+	// LastSyncedAt is the last time the operator marked the key status active
+	// and ready.
 	// +optional
 	LastSyncedAt *metav1.Time `json:"lastSyncedAt,omitempty"`
 }

@@ -17,7 +17,7 @@
 //
 // This file tests the full API key lifecycle:
 //   - Create APIKey CR → operator creates Secret with the raw key
-//   - IndexSyncer populates the in-memory index from the Secret
+//   - IndexSyncer joins APIKey status with the declared Secret in memory
 //   - gRPC ext_authz Check: allow with correct key+host, deny otherwise
 //
 // Prerequisites:
@@ -39,7 +39,6 @@
 package e2e
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +46,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,7 +58,8 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	testNS := createNamespace(t, "e2e-apikey")
 	_ = createAPIKey(t, testNS, "720h")
 
-	// Wait for the operator to create the Secret.
+	// Authorization requires coherent Active status and the declared Secret.
+	waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseActive, defaultTimeout)
 	sec := waitForSecret(t, testNS, apiKeySecret, defaultTimeout)
 	rawKey := string(sec.Data["apiKey"])
 	assert.NotEmpty(t, rawKey, "Secret should contain an apiKey")
@@ -170,65 +171,53 @@ func TestAPIKeyRotation(t *testing.T) {
 
 func TestAPIKeyExpiry(t *testing.T) {
 	testNS := createNamespace(t, "e2e-expiry")
-	_ = createAPIKey(t, testNS, "3s")
+	// Establish the port-forward before starting the finite lifetime. Leave more
+	// than the 30s reconciliation timeout plus the 5s index wait so a slow setup
+	// cannot reach expiry before the pre-expiry assertion.
+	authzClient := setupAuthzClient(t)
+	_ = createAPIKey(t, testNS, "45s")
 
-	// Wait for the key to become Active first.
-	waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseActive, defaultTimeout)
+	activeKey := waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseActive, defaultTimeout)
+	require.NotNil(t, activeKey.Status.Primary)
+	require.NotNil(t, activeKey.Status.Primary.ExpiresAt)
+	expiresAt := activeKey.Status.Primary.ExpiresAt.Time
 
-	// Capture the key.
 	sec := waitForSecret(t, testNS, apiKeySecret, defaultTimeout)
 	rawKey := string(sec.Data["apiKey"])
-	assert.NotEmpty(t, rawKey)
-	t.Logf("Key created: %s... (len=%d, expiresIn=3s)", rawKey[:6], len(rawKey))
+	require.NotEmpty(t, rawKey)
+	t.Logf("Key created: %s... (len=%d, expiresAt=%s)", rawKey[:6], len(rawKey), expiresAt.Format(time.RFC3339Nano))
 
-	// Port-forward and verify the key works while active.
-	authzClient := setupAuthzClient(t)
 	time.Sleep(indexSyncWait)
 	host := namespaceHost(testNS)
+	assertAllowed(t, authzClient, makeCheckRequest(host, "Bearer "+rawKey, "/v1/chat/completions"))
 
-	t.Run("allow_before_expiry", func(t *testing.T) {
-		assertAllowed(t, authzClient, makeCheckRequest(host, "Bearer "+rawKey, "/v1/chat/completions"))
-	})
-
-	// Wait for the key to expire.
-	expiredKey := waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseExpired, defaultTimeout)
-	assert.NotNil(t, expiredKey.Status.Primary)
-	assert.NotNil(t, expiredKey.Status.Primary.ExpiresAt)
-	t.Logf("Key expired at %s", expiredKey.Status.Primary.ExpiresAt.Format(time.RFC3339))
-
-	// Verify the status condition.
-	readyCond := findCondition(expiredKey.Status.Conditions, "Ready")
-	assert.NotNil(t, readyCond, "expected Ready condition")
-	if readyCond != nil {
-		assert.Equal(t, metav1.ConditionFalse, readyCond.Status)
-		assert.Equal(t, "Expired", readyCond.Reason)
-		t.Logf("Ready condition: status=%s reason=%s message=%s",
-			readyCond.Status, readyCond.Reason, readyCond.Message)
+	// Cross the persisted deadline and verify request-time enforcement even if
+	// the authz index still contains the record.
+	if wait := time.Until(expiresAt.Add(pollInterval)); wait > 0 {
+		time.Sleep(wait)
 	}
+	assertDenied(t, authzClient, makeCheckRequest(host, "Bearer "+rawKey, "/v1/chat/completions"))
+
+	expiredKey := waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseExpired, defaultTimeout)
+	require.NotNil(t, expiredKey.Status.Primary)
+	require.NotNil(t, expiredKey.Status.Primary.ExpiresAt)
+	assert.True(t, expiredKey.Status.Primary.ExpiresAt.Time.Equal(expiresAt))
+	assert.Nil(t, expiredKey.Status.Secondary)
+	assert.Nil(t, expiredKey.Status.SecretRef)
+
+	var deletedSecret corev1.Secret
+	err := k8sClient.Get(ctx, client.ObjectKey{Namespace: testNS, Name: apiKeySecret}, &deletedSecret)
+	assert.True(t, apierrors.IsNotFound(err), "owned key Secret must be deleted before Expired status is persisted")
+
+	readyCond := findCondition(expiredKey.Status.Conditions, "Ready")
+	require.NotNil(t, readyCond, "expected Ready condition")
+	assert.Equal(t, metav1.ConditionFalse, readyCond.Status)
+	assert.Equal(t, "Expired", readyCond.Reason)
 	expiryEvent := waitForAPIKeyEvent(t, expiredKey, corev1.EventTypeWarning, "Expired", "apikey-operator", defaultTimeout)
 	assert.Equal(t, "Expired", expiryEvent.Action)
-}
 
-func TestAPIKeyAuthzEmptyKeyEvent(t *testing.T) {
-	testNS := createNamespace(t, "e2e-empty-key-event")
-	_ = createAPIKey(t, testNS, "720h")
-	apiKey := waitForAPIKeyPhase(t, testNS, apiKeyName, v1alpha1.PhaseActive, defaultTimeout)
-	waitForSecret(t, testNS, apiKeySecret, defaultTimeout)
-
-	emptySecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "empty-api-key-event",
-			Namespace: testNS,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(apiKey, v1alpha1.GroupVersion.WithKind("APIKey")),
-			},
-		},
-		Data: map[string][]byte{"apiKey": []byte{}},
-	}
-	require.NoError(t, k8sClient.Create(ctx, emptySecret))
-	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), emptySecret) })
-
-	event := waitForAPIKeyEvent(t, apiKey, corev1.EventTypeWarning, "EmptyAPIKey", "apikey-authz", defaultTimeout)
-	assert.Equal(t, "EmptyAPIKey", event.Action)
-	assert.Contains(t, event.Note, `Managed Secret "empty-api-key-event" has no primary API key`)
+	// Deletion/relist must not create a stale allow window.
+	assertDenied(t, authzClient, makeCheckRequest(host, "Bearer "+rawKey, "/v1/chat/completions"))
+	time.Sleep(indexSyncWait)
+	assertDenied(t, authzClient, makeCheckRequest(host, "Bearer "+rawKey, "/v1/chat/completions"))
 }

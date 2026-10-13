@@ -130,3 +130,11 @@ Flow:
   [ns: inferencepool]
   HTTPRoute → InferencePool → EPP → InferenceModel → Model endpoint
 ```
+
+## API-key authorization data flow
+
+The API-key operator owns the plaintext Secret and publishes each generation's identity and absolute deadline in `APIKey.status`. The authz `IndexSyncer` watches status-only APIKey updates as well as Secret events. It fetches `APIKey/default`, then only the Secret named by `status.secretRef`, and requires that Secret's controller owner name and UID to match the APIKey.
+
+Each present `apiKey` or `secondaryApiKey` value is SHA-256 hashed and matched across both primary and secondary status entries by the existing eight-hex-character `keyID`; physical Secret slots do not determine status identity. The full hash—not the short ID—is the in-memory lookup key. Duplicate or ambiguous IDs and any unmatched present credential invalidate the complete namespace replacement. An unmatched secondary status is permitted only so Secret-first grace-period cleanup remains available while status catches up. The 32-bit join is not a cryptographic binding to the Secret value, so principals with write access to the managed Secret are inside the trust boundary.
+
+The complete namespace map is published atomically only when the resources are coherent. Creation, rotation, and cleanup may therefore have brief fail-closed windows between Secret and status writes. Request handling independently denies finite keys when `now >= expiresAt`, so operator reconciliation and Secret deletion are not on the expiry enforcement path.

@@ -16,21 +16,29 @@ package apikey
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
+	"google.golang.org/grpc/codes"
+	clocktesting "k8s.io/utils/clock/testing"
 
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
 func newTestServer() (*Server, *keyindex.Index) {
+	return newTestServerAt(time.Date(2026, time.October, 8, 12, 0, 0, 0, time.UTC))
+}
+
+func newTestServerAt(now time.Time) (*Server, *keyindex.Index) {
 	idx := keyindex.New()
 	logger, _ := zap.NewDevelopment()
-	return NewServer(idx, logger), idx
+	return NewServer(idx, logger, clocktesting.NewFakeClock(now)), idx
 }
 
 func makeCheckRequest(authHeader string) *authv3.CheckRequest {
@@ -98,6 +106,66 @@ func TestCheck_UnknownKey(t *testing.T) {
 	resp, err := srv.Check(context.Background(), makeCheckRequestWithGateway("Bearer "+result.RawKey, "default"))
 	require.NoError(t, err)
 	assert.NotNil(t, resp.GetDeniedResponse(), "expected denied response for unknown key")
+	assert.Equal(t, "invalid API key in Authorization header", resp.GetStatus().GetMessage())
+}
+
+func TestCheck_ExpiryBoundary(t *testing.T) {
+	now := time.Date(2026, time.October, 8, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		expiresAt time.Time
+		allowed   bool
+	}{
+		{name: "finite before expiry", expiresAt: now.Add(time.Nanosecond), allowed: true},
+		{name: "finite at expiry", expiresAt: now, allowed: false},
+		{name: "finite after expiry", expiresAt: now.Add(-time.Nanosecond), allowed: false},
+		{name: "explicit never record", expiresAt: time.Time{}, allowed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			core, logs := observer.New(zap.InfoLevel)
+			idx := keyindex.New()
+			srv := NewServer(idx, zap.New(core), clocktesting.NewFakeClock(now))
+			result, err := keyutil.GenerateAPIKey("sk-")
+			require.NoError(t, err)
+			idx.Upsert(result.Hash, keyindex.TenantRecord{
+				Namespace: "team-alpha",
+				KeyID:     result.KeyID,
+				ExpiresAt: tt.expiresAt,
+			})
+
+			resp, err := srv.Check(context.Background(), makeCheckRequestWithGateway("Bearer "+result.RawKey, "team-alpha"))
+			require.NoError(t, err)
+			if tt.allowed {
+				assert.NotNil(t, resp.GetOkResponse())
+				return
+			}
+			assert.NotNil(t, resp.GetDeniedResponse())
+			assert.Equal(t, int32(codes.Unauthenticated), resp.GetStatus().GetCode())
+			assert.Equal(t, "invalid API key in Authorization header", resp.GetStatus().GetMessage())
+			require.Len(t, logs.All(), 1)
+			assert.Equal(t, "deny_expired_key", logs.All()[0].ContextMap()["result"])
+		})
+	}
+}
+
+func TestCheck_ExpiredHigherPrecedenceHeaderDoesNotFallBack(t *testing.T) {
+	now := time.Date(2026, time.October, 8, 12, 0, 0, 0, time.UTC)
+	srv, idx := newTestServerAt(now)
+	expired, err := keyutil.GenerateAPIKey("sk-")
+	require.NoError(t, err)
+	valid, err := keyutil.GenerateAPIKey("sk-")
+	require.NoError(t, err)
+	idx.SetNamespaceKeys("team-alpha", map[string]keyindex.TenantRecord{
+		expired.Hash: {Namespace: "team-alpha", KeyID: expired.KeyID, ExpiresAt: now},
+		valid.Hash:   {Namespace: "team-alpha", KeyID: valid.KeyID},
+	})
+
+	req := makeCheckRequestWithGateway("Bearer "+expired.RawKey, "team-alpha")
+	req.GetAttributes().GetRequest().GetHttp().GetHeaders()[apiKeyHeader] = valid.RawKey
+	resp, err := srv.Check(context.Background(), req)
+	require.NoError(t, err)
+	assert.NotNil(t, resp.GetDeniedResponse())
 	assert.Equal(t, "invalid API key in Authorization header", resp.GetStatus().GetMessage())
 }
 

@@ -16,6 +16,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,380 +25,550 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
-func TestSyncReconcile_SecretNotFound(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
-	c := fake.NewClientBuilder().WithScheme(s).Build()
+const syncTestNamespace = "team-alpha"
 
-	// Pre-populate the index for the namespace
-	idx.Upsert("somehash", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "abcd1234"})
-	require.Equal(t, 1, idx.Size())
-
-	recorder := events.NewFakeRecorder(10)
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
-	})
-	require.NoError(t, err)
-
-	// Index should be cleared for the namespace without emitting an Event.
-	assert.Equal(t, 0, idx.Size(), "expected index size 0 after Secret not found")
-	requireNoEvent(t, recorder)
+func keyID(rawKey string) string {
+	return keyutil.KeyIDFromHash(keyutil.HashKey(rawKey))
 }
 
-func TestSyncReconcile_EmptyKey(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
+func metadataTime(value time.Time) *metav1.Time {
+	result := metav1.NewTime(value)
+	return &result
+}
+
+func syncFixture(
+	namespace string,
+	primaryRaw string,
+	primaryExpiry *time.Time,
+	secondaryRaw string,
+	secondaryExpiry *time.Time,
+) (*v1alpha1.APIKey, *corev1.Secret) {
+	const uid = types.UID("apikey-uid")
+	controller := true
+	apiKey := &v1alpha1.APIKey{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keyutil.SingletonName,
+			Namespace: namespace,
+			UID:       uid,
+		},
+		Status: v1alpha1.APIKeyStatus{
+			Phase: v1alpha1.PhaseActive,
+			Primary: &v1alpha1.KeyStatus{
+				KeyID: keyID(primaryRaw),
+			},
+			SecretRef: &v1alpha1.SecretReference{Name: keyutil.SecretName},
+		},
+	}
+	if primaryExpiry != nil {
+		apiKey.Status.Primary.ExpiresAt = metadataTime(*primaryExpiry)
+	}
+	if secondaryRaw != "" {
+		apiKey.Status.Secondary = &v1alpha1.KeyStatus{KeyID: keyID(secondaryRaw)}
+		if secondaryExpiry != nil {
+			apiKey.Status.Secondary.ExpiresAt = metadataTime(*secondaryExpiry)
+		}
+	}
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
+			Name:      keyutil.SecretName,
+			Namespace: namespace,
+			UID:       types.UID("secret-uid"),
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: v1alpha1.GroupVersion.String(),
 				Kind:       "APIKey",
-				Name:       "default",
-				UID:        types.UID("apikey-uid"),
+				Name:       keyutil.SingletonName,
+				UID:        uid,
+				Controller: &controller,
 			}},
 		},
-		Data: map[string][]byte{
-			keyutil.SecretKey: []byte(""),
-		},
+		Data: map[string][]byte{keyutil.SecretKey: []byte(primaryRaw)},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
-
-	// Pre-populate
-	idx.Upsert("oldhash", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "old"})
-
-	recorder := events.NewFakeRecorder(10)
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
-	})
-	require.NoError(t, err)
-	assert.Equal(t, 0, idx.Size(), "expected index size 0 for empty key")
-	requireEvent(t, recorder, `Warning EmptyAPIKey Managed Secret "llm-api-key" has no primary API key; authorization index was cleared`)
+	if secondaryRaw != "" {
+		secret.Data[keyutil.SecondarySecretKey] = []byte(secondaryRaw)
+	}
+	return apiKey, secret
 }
 
-func TestSyncReconcile_MissingKeyField(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: v1alpha1.GroupVersion.String(),
-				Kind:       "APIKey",
-				Name:       "default",
-				UID:        types.UID("apikey-uid"),
-			}},
-		},
-		Data: map[string][]byte{},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
-	recorder := events.NewFakeRecorder(10)
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
-
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
-	})
+func reconcileSyncer(t *testing.T, syncer *IndexSyncer, namespace string) {
+	t.Helper()
+	_, err := syncer.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: namespace,
+		Name:      keyutil.SingletonName,
+	}})
 	require.NoError(t, err)
-	requireEvent(t, recorder, `Warning EmptyAPIKey Managed Secret "llm-api-key" has no primary API key; authorization index was cleared`)
 }
 
-func TestSyncReconcile_SyncsPrimaryKey(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
+func TestBuildNamespaceEntries(t *testing.T) {
+	primaryExpiry := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	secondaryExpiry := primaryExpiry.Add(-time.Hour)
 
-	rawKey := "sk-test-key-12345"
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-		},
-		Data: map[string][]byte{
-			keyutil.SecretKey: []byte(rawKey),
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
-
-	recorder := events.NewFakeRecorder(10)
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
+	t.Run("non-expiring primary", func(t *testing.T) {
+		apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+		entries, err := buildNamespaceEntries(apiKey, secret)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		record := entries[keyutil.HashKey("sk-primary")]
+		assert.Equal(t, syncTestNamespace, record.Namespace)
+		assert.Equal(t, keyID("sk-primary"), record.KeyID)
+		assert.True(t, record.ExpiresAt.IsZero())
 	})
-	require.NoError(t, err)
-	requireNoEvent(t, recorder)
 
-	expectedHash := keyutil.HashKey(rawKey)
-	expectedKeyID := keyutil.KeyIDFromHash(expectedHash)
+	t.Run("finite primary and secondary", func(t *testing.T) {
+		apiKey, secret := syncFixture(
+			syncTestNamespace,
+			"sk-primary",
+			&primaryExpiry,
+			"sk-secondary",
+			&secondaryExpiry,
+		)
+		entries, err := buildNamespaceEntries(apiKey, secret)
+		require.NoError(t, err)
+		require.Len(t, entries, 2)
+		assert.Equal(t, primaryExpiry, entries[keyutil.HashKey("sk-primary")].ExpiresAt)
+		assert.Equal(t, secondaryExpiry, entries[keyutil.HashKey("sk-secondary")].ExpiresAt)
+	})
 
-	rec, ok := idx.Lookup(expectedHash)
-	require.True(t, ok, "expected key hash to be in index")
-	assert.Equal(t, "team-alpha", rec.Namespace)
-	assert.Equal(t, expectedKeyID, rec.KeyID)
-	assert.Equal(t, 1, idx.Size())
+	t.Run("matches across physical slots", func(t *testing.T) {
+		apiKey, secret := syncFixture(
+			syncTestNamespace,
+			"sk-primary",
+			&primaryExpiry,
+			"sk-secondary",
+			&secondaryExpiry,
+		)
+		secret.Data[keyutil.SecretKey], secret.Data[keyutil.SecondarySecretKey] =
+			secret.Data[keyutil.SecondarySecretKey], secret.Data[keyutil.SecretKey]
+
+		entries, err := buildNamespaceEntries(apiKey, secret)
+		require.NoError(t, err)
+		require.Len(t, entries, 2)
+		assert.Equal(t, primaryExpiry, entries[keyutil.HashKey("sk-primary")].ExpiresAt)
+		assert.Equal(t, secondaryExpiry, entries[keyutil.HashKey("sk-secondary")].ExpiresAt)
+	})
+
+	t.Run("permits stale secondary status after Secret cleanup", func(t *testing.T) {
+		apiKey, secret := syncFixture(
+			syncTestNamespace,
+			"sk-primary",
+			&primaryExpiry,
+			"sk-secondary",
+			&secondaryExpiry,
+		)
+		delete(secret.Data, keyutil.SecondarySecretKey)
+
+		entries, err := buildNamespaceEntries(apiKey, secret)
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		_, found := entries[keyutil.HashKey("sk-primary")]
+		assert.True(t, found)
+	})
+
+	t.Run("indexes a well-formed past deadline", func(t *testing.T) {
+		expiredAt := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
+		apiKey, secret := syncFixture(syncTestNamespace, "sk-expired", &expiredAt, "", nil)
+		entries, err := buildNamespaceEntries(apiKey, secret)
+		require.NoError(t, err)
+		assert.Equal(t, expiredAt, entries[keyutil.HashKey("sk-expired")].ExpiresAt)
+	})
 }
 
-func TestSyncReconcile_SyncsPrimaryAndSecondaryKey(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
-
-	rawKey := "sk-primary-key"
-	prevKey := "sk-secondary-key"
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-		},
-		Data: map[string][]byte{
-			keyutil.SecretKey:          []byte(rawKey),
-			keyutil.SecondarySecretKey: []byte(prevKey),
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
-
-	recorder := events.NewFakeRecorder(10)
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
-	})
-	require.NoError(t, err)
-	requireNoEvent(t, recorder)
-
-	// Both keys should be in the index
-	currentHash := keyutil.HashKey(rawKey)
-	prevHash := keyutil.HashKey(prevKey)
-
-	_, ok := idx.Lookup(currentHash)
-	assert.True(t, ok, "expected primary key hash in index")
-	_, ok = idx.Lookup(prevHash)
-	assert.True(t, ok, "expected secondary key hash in index")
-	assert.Equal(t, 2, idx.Size())
-}
-
-func TestSyncReconcile_ReplacesStaleEntries(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
-
-	// Simulate a previously synced key
-	idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: "team-alpha", KeyID: "stale"})
-
-	newKey := "sk-new-key"
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-		},
-		Data: map[string][]byte{
-			keyutil.SecretKey: []byte(newKey),
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
-
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
-	})
-	require.NoError(t, err)
-
-	// Stale entry should be gone
-	_, ok := idx.Lookup("stale-hash")
-	assert.False(t, ok, "expected stale hash to be removed from index")
-
-	// New entry should be present
-	newHash := keyutil.HashKey(newKey)
-	_, ok = idx.Lookup(newHash)
-	assert.True(t, ok, "expected new key hash in index")
-	assert.Equal(t, 1, idx.Size())
-}
-
-func TestSyncReconcile_EmptySecondaryKeyIgnored(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
-
-	rawKey := "sk-only-primary"
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-		},
-		Data: map[string][]byte{
-			keyutil.SecretKey:          []byte(rawKey),
-			keyutil.SecondarySecretKey: []byte(""),
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
-
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
-	})
-	require.NoError(t, err)
-
-	// Only the primary key should be indexed (empty secondaryApiKey is ignored)
-	assert.Equal(t, 1, idx.Size())
-	currentHash := keyutil.HashKey(rawKey)
-	_, ok := idx.Lookup(currentHash)
-	assert.True(t, ok, "expected primary key hash in index")
-}
-
-func TestSyncReconcile_MultipleNamespaces(t *testing.T) {
-	s := setupScheme()
-	idx := keyindex.New()
-
-	secret1 := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-		},
-		Data: map[string][]byte{
-			keyutil.SecretKey: []byte("sk-alpha-key"),
-		},
-	}
-	secret2 := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-beta",
-		},
-		Data: map[string][]byte{
-			keyutil.SecretKey: []byte("sk-beta-key"),
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(secret1, secret2).Build()
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
-
-	// Reconcile first namespace
-	_, err := syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"},
-	})
-	require.NoError(t, err)
-
-	// Reconcile second namespace
-	_, err = syncer.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-beta", Name: "llm-api-key"},
-	})
-	require.NoError(t, err)
-
-	assert.Equal(t, 2, idx.Size())
-
-	alphaHash := keyutil.HashKey("sk-alpha-key")
-	betaHash := keyutil.HashKey("sk-beta-key")
-
-	rec, ok := idx.Lookup(alphaHash)
-	require.True(t, ok, "expected alpha key in index")
-	assert.Equal(t, "team-alpha", rec.Namespace)
-
-	rec, ok = idx.Lookup(betaHash)
-	require.True(t, ok, "expected beta key in index")
-	assert.Equal(t, "team-beta", rec.Namespace)
-}
-
-func TestAPIKeyEventSubject(t *testing.T) {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-			OwnerReferences: []metav1.OwnerReference{{
-				APIVersion: v1alpha1.GroupVersion.String(),
-				Kind:       "APIKey",
-				Name:       "default",
-				UID:        types.UID("apikey-uid"),
-			}},
-		},
-	}
-
-	subject := apiKeyEventSubject(secret)
-	require.NotNil(t, subject)
-	assert.Equal(t, v1alpha1.GroupVersion.String(), subject.APIVersion)
-	assert.Equal(t, "APIKey", subject.Kind)
-	assert.Equal(t, "team-alpha", subject.Namespace)
-	assert.Equal(t, "default", subject.Name)
-	assert.Equal(t, types.UID("apikey-uid"), subject.UID)
-}
-
-func TestManagedSecretPredicate(t *testing.T) {
-	apiKeyGV := v1alpha1.GroupVersion.String()
+func TestBuildNamespaceEntriesRejectsIncoherentState(t *testing.T) {
+	primaryExpiry := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	secondaryExpiry := primaryExpiry.Add(-time.Hour)
 
 	tests := []struct {
-		name     string
-		obj      metav1.Object
-		expected bool
+		name   string
+		mutate func(*v1alpha1.APIKey, *corev1.Secret)
 	}{
 		{
-			name: "owned by APIKey",
-			obj: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "llm-api-key",
-					Namespace: "team-alpha",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: apiKeyGV,
-							Kind:       "APIKey",
-							Name:       "default",
-						},
-					},
-				},
+			name: "missing primary status",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.Primary = nil
 			},
-			expected: true,
 		},
 		{
-			name: "not owned by APIKey",
-			obj: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "other-secret",
-					Namespace: "team-alpha",
-				},
+			name: "empty primary status key ID",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.Primary.KeyID = ""
 			},
-			expected: false,
 		},
 		{
-			name: "owned by different kind",
-			obj: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "other-secret",
-					Namespace: "team-alpha",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: "apps/v1",
-							Kind:       "Deployment",
-							Name:       "my-deploy",
-						},
-					},
-				},
+			name: "zero primary expiry",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.Primary.ExpiresAt = &metav1.Time{}
 			},
-			expected: false,
 		},
 		{
-			name: "owned by same API group but different kind",
-			obj: &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "other-secret",
-					Namespace: "team-alpha",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: apiKeyGV,
-							Kind:       "SomethingElse",
-							Name:       "default",
-						},
-					},
-				},
+			name: "missing secondary expiry",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.Secondary.ExpiresAt = nil
 			},
-			expected: false,
+		},
+		{
+			name: "zero secondary expiry",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.Secondary.ExpiresAt = &metav1.Time{}
+			},
+		},
+		{
+			name: "duplicate status key IDs",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.Secondary.KeyID = apiKey.Status.Primary.KeyID
+			},
+		},
+		{
+			name: "Secret-new status-old",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.Data[keyutil.SecretKey] = []byte("sk-replacement")
+			},
+		},
+		{
+			name: "status-new Secret-old",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.Primary.KeyID = keyID("sk-replacement")
+			},
+		},
+		{
+			name: "one present Secret key is unmatched",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.Data[keyutil.SecondarySecretKey] = []byte("sk-unknown")
+			},
+		},
+		{
+			name: "primary status is not consumed",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.Data[keyutil.SecretKey] = secret.Data[keyutil.SecondarySecretKey]
+				delete(secret.Data, keyutil.SecondarySecretKey)
+			},
+		},
+		{
+			name: "duplicate Secret key material",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.Data[keyutil.SecondarySecretKey] = secret.Data[keyutil.SecretKey]
+			},
+		},
+		{
+			name: "distinct Secret hashes have an ambiguous short key ID",
+			mutate: func(apiKey *v1alpha1.APIKey, secret *corev1.Secret) {
+				const first = "sk-collision-102837"
+				const second = "sk-collision-188090"
+				require.Equal(t, keyID(first), keyID(second))
+				apiKey.Status.Primary.KeyID = keyID(first)
+				apiKey.Status.Secondary = nil
+				secret.Data[keyutil.SecretKey] = []byte(first)
+				secret.Data[keyutil.SecondarySecretKey] = []byte(second)
+			},
+		},
+		{
+			name: "missing Secret primary",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				delete(secret.Data, keyutil.SecretKey)
+			},
+		},
+		{
+			name: "Secret reference mismatch",
+			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+				apiKey.Status.SecretRef.Name = "another-secret"
+			},
+		},
+		{
+			name: "missing controller owner",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.OwnerReferences[0].Controller = nil
+			},
+		},
+		{
+			name: "wrong owner API version",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.OwnerReferences[0].APIVersion = "kaito.sh/v2"
+			},
+		},
+		{
+			name: "wrong owner kind",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.OwnerReferences[0].Kind = "Other"
+			},
+		},
+		{
+			name: "wrong owner name",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.OwnerReferences[0].Name = "other"
+			},
+		},
+		{
+			name: "empty owner UID",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.OwnerReferences[0].UID = ""
+			},
+		},
+		{
+			name: "owner UID mismatch",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.OwnerReferences[0].UID = "another-uid"
+			},
+		},
+		{
+			name: "Secret is deleting",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				now := metav1.Now()
+				secret.DeletionTimestamp = &now
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, apiKeyOwnerReference(tt.obj) != nil)
+			apiKey, secret := syncFixture(
+				syncTestNamespace,
+				"sk-primary",
+				&primaryExpiry,
+				"sk-secondary",
+				&secondaryExpiry,
+			)
+			tt.mutate(apiKey, secret)
+			entries, err := buildNamespaceEntries(apiKey, secret)
+			require.Error(t, err)
+			assert.Nil(t, entries)
 		})
 	}
+}
+
+func TestSyncReconcilePublishesAndReplacesNamespaceAtomically(t *testing.T) {
+	primaryExpiry := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	secondaryExpiry := primaryExpiry.Add(-time.Hour)
+	apiKey, secret := syncFixture(
+		syncTestNamespace,
+		"sk-primary",
+		&primaryExpiry,
+		"sk-secondary",
+		&secondaryExpiry,
+	)
+	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
+	idx := keyindex.New()
+	idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	assert.Equal(t, 2, idx.Size())
+	_, found := idx.Lookup("stale-hash")
+	assert.False(t, found)
+	assert.True(t, primaryExpiry.Equal(mustLookupRecord(t, idx, "sk-primary").ExpiresAt))
+	assert.True(t, secondaryExpiry.Equal(mustLookupRecord(t, idx, "sk-secondary").ExpiresAt))
+
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), secret))
+	secret.Data[keyutil.SecondarySecretKey] = []byte("sk-unmatched")
+	require.NoError(t, c.Update(context.Background(), secret))
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	assert.Zero(t, idx.Size(), "one unmatched present key must clear the whole namespace")
+}
+
+func TestSyncReconcileRespondsToStatusOnlyChanges(t *testing.T) {
+	firstExpiry := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	secondExpiry := firstExpiry.Add(24 * time.Hour)
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", &firstExpiry, "", nil)
+	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
+	idx := keyindex.New()
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	assert.True(t, firstExpiry.Equal(mustLookupRecord(t, idx, "sk-primary").ExpiresAt))
+
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(apiKey), apiKey))
+	apiKey.Status.Primary.ExpiresAt = metadataTime(secondExpiry)
+	require.NoError(t, c.Update(context.Background(), apiKey))
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	assert.True(t, secondExpiry.Equal(mustLookupRecord(t, idx, "sk-primary").ExpiresAt))
+}
+
+func TestSyncReconcileClearsInvalidLifecycleStates(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+
+	tests := []struct {
+		name    string
+		objects []client.Object
+	}{
+		{name: "APIKey missing", objects: []client.Object{secret}},
+		{
+			name: "APIKey is deleting",
+			objects: func() []client.Object {
+				copy := apiKey.DeepCopy()
+				now := metav1.Now()
+				copy.DeletionTimestamp = &now
+				copy.Finalizers = []string{"test-finalizer"}
+				return []client.Object{copy, secret}
+			}(),
+		},
+		{
+			name: "APIKey is not Active",
+			objects: func() []client.Object {
+				copy := apiKey.DeepCopy()
+				copy.Status.Phase = v1alpha1.PhaseExpired
+				return []client.Object{copy, secret}
+			}(),
+		},
+		{
+			name: "Secret reference missing",
+			objects: func() []client.Object {
+				copy := apiKey.DeepCopy()
+				copy.Status.SecretRef = nil
+				return []client.Object{copy, secret}
+			}(),
+		},
+		{name: "declared Secret missing", objects: []client.Object{apiKey}},
+		{
+			name: "declared Secret incoherent",
+			objects: func() []client.Object {
+				copy := secret.DeepCopy()
+				copy.Data[keyutil.SecretKey] = []byte("sk-unknown")
+				return []client.Object{apiKey, copy}
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(tt.objects...).Build()
+			idx := keyindex.New()
+			idx.Upsert("old-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "old"})
+			recorder := events.NewFakeRecorder(10)
+			syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
+
+			reconcileSyncer(t, syncer, syncTestNamespace)
+			assert.Zero(t, idx.Size())
+		})
+	}
+}
+
+func TestSyncReconcileSecretReadErrorClearsStaleNamespace(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+	c := fake.NewClientBuilder().
+		WithScheme(setupScheme()).
+		WithObjects(apiKey, secret).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, delegate client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					return assert.AnError
+				}
+				return delegate.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	idx := keyindex.New()
+	idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+	_, err := syncer.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: syncTestNamespace,
+		Name:      keyutil.SingletonName,
+	}})
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Zero(t, idx.Size())
+}
+
+func TestSyncReconcileNamespaceIsolationAndRecovery(t *testing.T) {
+	alphaAPIKey, alphaSecret := syncFixture("team-alpha", "sk-alpha", nil, "", nil)
+	betaAPIKey, betaSecret := syncFixture("team-beta", "sk-beta", nil, "", nil)
+	betaAPIKey.UID = "beta-apikey-uid"
+	betaSecret.OwnerReferences[0].UID = betaAPIKey.UID
+
+	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(
+		alphaAPIKey,
+		alphaSecret,
+		betaAPIKey,
+		betaSecret,
+	).Build()
+	idx := keyindex.New()
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+	reconcileSyncer(t, syncer, "team-alpha")
+	reconcileSyncer(t, syncer, "team-beta")
+	assert.Equal(t, 2, idx.Size())
+
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(alphaSecret), alphaSecret))
+	alphaSecret.Data[keyutil.SecretKey] = []byte("sk-incoherent")
+	require.NoError(t, c.Update(context.Background(), alphaSecret))
+	reconcileSyncer(t, syncer, "team-alpha")
+	assert.Equal(t, 1, idx.Size())
+	_, alphaFound := idx.Lookup(keyutil.HashKey("sk-alpha"))
+	assert.False(t, alphaFound)
+	_, betaFound := idx.Lookup(keyutil.HashKey("sk-beta"))
+	assert.True(t, betaFound)
+
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(alphaSecret), alphaSecret))
+	alphaSecret.Data[keyutil.SecretKey] = []byte("sk-alpha")
+	require.NoError(t, c.Update(context.Background(), alphaSecret))
+	reconcileSyncer(t, syncer, "team-alpha")
+	assert.Equal(t, 2, idx.Size())
+	_, alphaFound = idx.Lookup(keyutil.HashKey("sk-alpha"))
+	assert.True(t, alphaFound)
+}
+
+func TestSyncReconcileAPIKeyDeletionCannotBeUndoneByLingeringSecret(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
+	idx := keyindex.New()
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	require.Equal(t, 1, idx.Size())
+	require.NoError(t, c.Delete(context.Background(), apiKey))
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	assert.Zero(t, idx.Size())
+
+	requests := secretToAPIKey(context.Background(), secret)
+	require.Len(t, requests, 1)
+	_, err := syncer.Reconcile(context.Background(), requests[0])
+	require.NoError(t, err)
+	assert.Zero(t, idx.Size(), "a lingering Secret event must not restore deleted APIKey state")
+}
+
+func TestSecretToAPIKey(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+	_ = apiKey
+
+	requests := secretToAPIKey(context.Background(), secret)
+	require.Equal(t, []ctrl.Request{{NamespacedName: types.NamespacedName{
+		Namespace: syncTestNamespace,
+		Name:      keyutil.SingletonName,
+	}}}, requests)
+
+	unrelated := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: syncTestNamespace}}
+	assert.Empty(t, secretToAPIKey(context.Background(), unrelated))
+
+	secret.OwnerReferences[0].Controller = nil
+	assert.Empty(t, secretToAPIKey(context.Background(), secret))
+}
+
+func TestSyncReconcileEmitsSafeCoherenceWarning(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+	secret.Data[keyutil.SecretKey] = []byte("sensitive-raw-key")
+	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
+	recorder := events.NewFakeRecorder(1)
+	syncer := &IndexSyncer{Client: c, KeyIndex: keyindex.New(), Recorder: recorder}
+
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	select {
+	case event := <-recorder.Events:
+		assert.Contains(t, event, "Warning InvalidAPIKeyState")
+		assert.NotContains(t, event, "sensitive-raw-key")
+	case <-time.After(time.Second):
+		t.Fatal("expected warning event")
+	}
+}
+
+func mustLookupRecord(t *testing.T, idx *keyindex.Index, rawKey string) keyindex.TenantRecord {
+	t.Helper()
+	record, found := idx.Lookup(keyutil.HashKey(rawKey))
+	require.True(t, found)
+	return record
 }

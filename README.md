@@ -28,10 +28,16 @@ Ingress → Istio Gateway
 The project ships three components:
 
 - **apikey-operator**: Reconciles `APIKey` CRs — generates and rotates keys, manages backing `Secret`s, expires keys, and serves the validating admission webhook.
-- **apikey-authz**: Envoy `ext_authz` gRPC server that validates API keys using an in-memory index synced from managed `Secret`s.
+- **apikey-authz**: Envoy `ext_authz` gRPC server that validates API keys using an in-memory index joined from active `APIKey` status and each resource's declared managed `Secret`.
 - **azure-authz**: Envoy `ext_authz` gRPC server that authorizes Azure AD JWT principals via Kubernetes SAR, with an LRU cache.
 
 See [docs/architecture.md](docs/architecture.md) for the full cluster topology including namespaces, RBAC, and NetworkPolicies.
+
+### API-key expiry and index coherence
+
+`apikey-authz` watches both `APIKey` resources and Secrets. For each namespace, it reads raw credentials only from the Secret named by `status.secretRef` and reads key identity and absolute expiry from `status.primaryKey` and `status.secondaryKey`. A credential is denied at the exact persisted deadline (`now >= expiresAt`); deletion of the Secret by the operator is cleanup rather than the authorization boundary.
+
+The join uses the existing eight-hex-character (32-bit) `keyID`, while the in-memory credential lookup remains keyed by the full SHA-256 hash. Duplicate or ambiguous IDs, an unexpected owner reference, and any present Secret key without a unique status match clear the whole namespace from the index. Secret-first lifecycle updates can therefore cause a brief denial while status catches up, but cannot retain a matched subset from mixed generations or allow a key past its deadline. Because the status join is only 32 bits, it is not a cryptographic binding to the Secret value; write access to the managed Secret is therefore trusted. This model adds no Secret metadata protocol or new CRD field.
 
 ## Getting Started
 

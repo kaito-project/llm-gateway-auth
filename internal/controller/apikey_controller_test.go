@@ -15,749 +15,674 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/events"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
+	"github.com/kaito-project/llm-gateway-auth/internal/keyutil"
 )
 
 func setupScheme() *runtime.Scheme {
-	s := runtime.NewScheme()
-	clientgoscheme.AddToScheme(s)
-	v1alpha1.AddToScheme(s)
-	return s
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = v1alpha1.AddToScheme(scheme)
+	return scheme
 }
 
-type capturedEvent struct {
-	EventType string
-	Reason    string
-	Action    string
-	Note      string
+func reconcileRequest() ctrl.Request {
+	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: keyutil.SingletonName}}
 }
 
-type capturedEventRecorder struct {
-	Events []capturedEvent
+func operatorKeyID(raw string) string {
+	return keyutil.KeyIDFromHash(keyutil.HashKey(raw))
 }
 
-func (r *capturedEventRecorder) Eventf(_ runtime.Object, _ runtime.Object, eventType, reason, action, note string, args ...any) {
-	r.Events = append(r.Events, capturedEvent{
-		EventType: eventType,
-		Reason:    reason,
-		Action:    action,
-		Note:      fmt.Sprintf(note, args...),
-	})
-}
-
-func requireCapturedEvent(t *testing.T, recorder *capturedEventRecorder, expected capturedEvent) {
+func assertSameTime(t *testing.T, expected, actual time.Time, msgAndArgs ...any) {
 	t.Helper()
-	require.Equal(t, []capturedEvent{expected}, recorder.Events)
-}
-
-func requireEvent(t *testing.T, recorder *events.FakeRecorder, expected string) {
-	t.Helper()
-	select {
-	case event := <-recorder.Events:
-		require.Equal(t, expected, event)
-	default:
-		t.Fatal("expected Kubernetes Event, got none")
+	if len(msgAndArgs) > 0 {
+		assert.True(t, expected.Equal(actual), msgAndArgs...)
+		return
 	}
+	assert.True(t, expected.Equal(actual), "expected %s, got %s", expected, actual)
 }
 
-func requireNoEvent(t *testing.T, recorder *events.FakeRecorder) {
-	t.Helper()
-	select {
-	case event := <-recorder.Events:
-		t.Fatalf("expected no Kubernetes Event, got %q", event)
-	default:
-	}
-}
-
-func findReadyCondition(t *testing.T, apiKey *v1alpha1.APIKey) *metav1.Condition {
-	t.Helper()
-	for i := range apiKey.Status.Conditions {
-		if apiKey.Status.Conditions[i].Type == "Ready" {
-			return &apiKey.Status.Conditions[i]
-		}
-	}
-	t.Fatal("expected Ready condition")
-	return nil
-}
-
-func TestReconcile_InvalidName(t *testing.T) {
-	s := setupScheme()
+func coherentObjects(now time.Time, rawPrimary string, expiresAt *time.Time) (*v1alpha1.APIKey, *corev1.Secret) {
 	apiKey := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "not-default",
-			Namespace: "team-alpha",
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
-
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "not-default"},
-	})
-	require.NoError(t, err)
-}
-
-func TestReconcile_NotFound(t *testing.T) {
-	s := setupScheme()
-	c := fake.NewClientBuilder().WithScheme(s).Build()
-	r := &APIKeyReconciler{Client: c}
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-}
-
-func TestReconcile_GeneratesSecret(t *testing.T) {
-	s := setupScheme()
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
-			Namespace: "team-alpha",
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-		},
-	}
-
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	recorder := events.NewFakeRecorder(10)
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-
-	// First reconcile: should create Secret and set status.secretRef
-	result, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-	assert.NotZero(t, result.RequeueAfter, "expected requeue after Secret creation")
-	requireEvent(t, recorder, `Normal Created Stored newly generated API key material in Secret "llm-api-key"`)
-
-	// Verify Secret was created
-	var secret corev1.Secret
-	err = c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &secret)
-	require.NoError(t, err, "expected Secret to be created")
-
-	rawKey := string(secret.Data["apiKey"])
-	assert.NotEmpty(t, rawKey, "expected non-empty API key in Secret")
-
-	// Verify status.secretRef was set
-	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	require.NotNil(t, updated.Status.SecretRef, "expected status.secretRef to be set")
-	assert.Equal(t, "llm-api-key", updated.Status.SecretRef.Name)
-
-	// Second reconcile: should read Secret and update status
-	_, err = r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err, "unexpected error on second reconcile")
-	requireNoEvent(t, recorder)
-
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
-	require.NotNil(t, updated.Status.Primary, "expected primary to be set")
-	assert.NotEmpty(t, updated.Status.Primary.KeyID, "expected primary.keyID to be set")
-}
-
-func TestReconcile_SecretCreateFailureEmitsEvent(t *testing.T) {
-	s := setupScheme()
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "team-alpha"},
-		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-"},
-	}
-	c := fake.NewClientBuilder().
-		WithScheme(s).
-		WithObjects(apiKey).
-		WithStatusSubresource(apiKey).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
-				return assert.AnError
-			},
-		}).
-		Build()
-	recorder := &capturedEventRecorder{}
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.ErrorIs(t, err, assert.AnError)
-	requireCapturedEvent(t, recorder, capturedEvent{
-		EventType: corev1.EventTypeWarning,
-		Reason:    eventReasonSecretWriteFailed,
-		Action:    eventActionCreateSecret,
-		Note:      `Failed to create Secret "llm-api-key"`,
-	})
-}
-
-func TestReconcile_ExistingSecretInStatus(t *testing.T) {
-	s := setupScheme()
-	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-		},
-		Data: map[string][]byte{
-			"apiKey": []byte(rawKey),
-		},
-	}
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
-			Namespace: "team-alpha",
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-		},
-		Status: v1alpha1.APIKeyStatus{
-			SecretRef: &v1alpha1.SecretReference{
-				Name: "llm-api-key",
-			},
-		},
-	}
-
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
-
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-
-	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
-}
-
-func TestReconcile_ExpiredKey(t *testing.T) {
-	s := setupScheme()
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "default",
+			Name:              keyutil.SingletonName,
 			Namespace:         "team-alpha",
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-2 * time.Hour)),
+			UID:               types.UID("apikey-uid"),
+			Finalizers:        []string{finalizerName},
+			CreationTimestamp: metav1.NewTime(now.Add(-time.Hour)),
 		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix:    "llmgw",
-			ExpiresIn: "1h", // 1 hour after creation, which was 2 hours ago → expired
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	recorder := events.NewFakeRecorder(10)
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-
-	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"}}
-	_, err := r.Reconcile(context.Background(), request)
-	require.NoError(t, err)
-
-	var updated v1alpha1.APIKey
-	require.NoError(t, c.Get(context.Background(), request.NamespacedName, &updated))
-	assert.Equal(t, v1alpha1.PhaseExpired, updated.Status.Phase)
-	requireEvent(t, recorder, "Warning Expired "+findReadyCondition(t, &updated).Message)
-
-	_, err = r.Reconcile(context.Background(), request)
-	require.NoError(t, err)
-	requireNoEvent(t, recorder)
-}
-
-func TestReconcile_SecretDeletedRegenerates(t *testing.T) {
-	s := setupScheme()
-	// CR has status.secretRef set but the Secret doesn't exist
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
-			Namespace: "team-alpha",
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-		},
+		Spec: v1alpha1.APIKeySpec{Prefix: "sk-"},
 		Status: v1alpha1.APIKeyStatus{
-			SecretRef: &v1alpha1.SecretReference{
-				Name: "llm-api-key",
-			},
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	recorder := events.NewFakeRecorder(10)
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-
-	// First reconcile: detect missing Secret, clear secretRef
-	result, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-	assert.NotZero(t, result.RequeueAfter, "expected requeue when Secret is missing")
-	requireEvent(t, recorder, `Warning SecretMissing Secret "llm-api-key" was not found; API key material will be regenerated`)
-
-	// Verify secretRef was cleared
-	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	assert.Nil(t, updated.Status.SecretRef, "expected status.secretRef to be cleared")
-}
-
-func TestReconcile_CorruptSecretRegenerates(t *testing.T) {
-	s := setupScheme()
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "llm-api-key", Namespace: "team-alpha"},
-		Data:       map[string][]byte{},
-	}
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "team-alpha"},
-		Spec:       v1alpha1.APIKeySpec{Prefix: "sk-"},
-		Status: v1alpha1.APIKeyStatus{
-			SecretRef: &v1alpha1.SecretReference{Name: "llm-api-key"},
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	recorder := events.NewFakeRecorder(10)
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-
-	result, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-	assert.NotZero(t, result.RequeueAfter)
-	requireEvent(t, recorder, `Warning SecretCorrupt Secret "llm-api-key" has no primary API key; API key material will be regenerated`)
-
-	var updated v1alpha1.APIKey
-	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated))
-	assert.Nil(t, updated.Status.SecretRef)
-}
-
-func newDueRotationObjects(apiKeyUID types.UID) (*v1alpha1.APIKey, *corev1.Secret) {
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "default",
-			Namespace:  "team-alpha",
-			UID:        apiKeyUID,
-			Finalizers: []string{finalizerName},
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-			Rotation: &v1alpha1.RotationSpec{
-				RotateAt: &metav1.Time{Time: time.Now().Add(-time.Minute)},
-			},
-		},
-		Status: v1alpha1.APIKeyStatus{
-			Primary:   &v1alpha1.KeyStatus{KeyID: "oldkeyid"},
 			Phase:     v1alpha1.PhaseActive,
-			SecretRef: &v1alpha1.SecretReference{Name: "llm-api-key"},
+			Primary:   &v1alpha1.KeyStatus{KeyID: operatorKeyID(rawPrimary)},
+			SecretRef: &v1alpha1.SecretReference{Name: keyutil.SecretName},
+			Conditions: []metav1.Condition{{
+				Type:               "Ready",
+				Status:             metav1.ConditionTrue,
+				Reason:             "Synced",
+				Message:            "Key is active",
+				LastTransitionTime: metav1.NewTime(now.Add(-time.Hour)),
+			}},
 		},
+	}
+	if expiresAt != nil {
+		apiKey.Status.Primary.ExpiresAt = &metav1.Time{Time: *expiresAt}
 	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
+			Name:      keyutil.SecretName,
+			Namespace: apiKey.Namespace,
+			UID:       types.UID("secret-uid"),
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(apiKey, v1alpha1.GroupVersion.WithKind("APIKey")),
 			},
 		},
-		Data: map[string][]byte{
-			"apiKey": []byte("sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"),
-		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{keyutil.SecretKey: []byte(rawPrimary)},
 	}
 	return apiKey, secret
 }
 
-func TestReconcile_Rotation(t *testing.T) {
-	s := setupScheme()
-	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
-	apiKeyUID := types.UID("rotation-uid")
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(&metav1.ObjectMeta{Name: "default", UID: apiKeyUID}, v1alpha1.GroupVersion.WithKind("APIKey")),
-			},
-		},
-		Data: map[string][]byte{
-			"apiKey": []byte(rawKey),
-		},
+func newTestReconciler(now time.Time, objects ...client.Object) (*APIKeyReconciler, client.Client) {
+	builder := fake.NewClientBuilder().WithScheme(setupScheme()).WithStatusSubresource(&v1alpha1.APIKey{})
+	if len(objects) > 0 {
+		builder = builder.WithObjects(objects...)
 	}
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
-			Namespace: "team-alpha",
-			UID:       apiKeyUID,
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-			Rotation: &v1alpha1.RotationSpec{
-				RotateAt: &metav1.Time{Time: time.Now().Add(-1 * time.Minute)},
-			},
-		},
-		Status: v1alpha1.APIKeyStatus{
-			Primary: &v1alpha1.KeyStatus{
-				KeyID: "oldkeyid",
-			},
-			Phase: v1alpha1.PhaseActive,
-			SecretRef: &v1alpha1.SecretReference{
-				Name: "llm-api-key",
-			},
-		},
-	}
-
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	recorder := events.NewFakeRecorder(10)
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-
-	result, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-	assert.NotZero(t, result.RequeueAfter, "expected requeue after grace period")
-
-	// Verify Secret has both keys
-	var updatedSecret corev1.Secret
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &updatedSecret)
-	assert.Equal(t, rawKey, string(updatedSecret.Data["secondaryApiKey"]), "expected secondary key in secret to match original key")
-	assert.NotEqual(t, rawKey, string(updatedSecret.Data["apiKey"]), "expected new key to be different from old key")
-
-	// Verify status
-	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
-	require.NotNil(t, updated.Status.Secondary, "expected status.secondaryKey to be set")
-	assert.Equal(t, "oldkeyid", updated.Status.Secondary.KeyID)
-	assert.NotNil(t, updated.Status.LastRotatedAt, "expected status.lastRotatedAt to be set")
-	assert.NotEqual(t, "oldkeyid", updated.Status.Primary.KeyID, "expected status.primaryKey.keyID to change after rotation")
-	requireEvent(t, recorder, "Normal Rotated "+findReadyCondition(t, &updated).Message)
-
-	// Verify spec.rotation.rotateAt was NOT mutated (controller should not write to spec)
-	assert.NotNil(t, updated.Spec.Rotation, "expected spec.rotation to be preserved")
-	assert.NotNil(t, updated.Spec.Rotation.RotateAt, "expected spec.rotation.rotateAt to be preserved (controller must not mutate spec)")
-
-	// Verify lastRotatedAt >= rotateAt (rotation acknowledged via status)
-	assert.False(t, updated.Status.LastRotatedAt.Time.Before(updated.Spec.Rotation.RotateAt.Time),
-		"expected status.lastRotatedAt >= spec.rotation.rotateAt")
+	c := builder.Build()
+	return &APIKeyReconciler{Client: c, Clock: clocktesting.NewFakeClock(now)}, c
 }
 
-func TestReconcile_RotationSecretUpdateFailureEmitsEvent(t *testing.T) {
-	s := setupScheme()
-	apiKey, secret := newDueRotationObjects(types.UID("rotation-secret-failure-uid"))
+func TestReconcile_NotFound(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	r, _ := newTestReconciler(now)
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+}
+
+func TestReconcile_CreationPublishesCompleteStatusWithoutAnnotations(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey := &v1alpha1.APIKey{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              keyutil.SingletonName,
+			Namespace:         "team-alpha",
+			UID:               types.UID("apikey-uid"),
+			CreationTimestamp: metav1.NewTime(now),
+		},
+		Spec: v1alpha1.APIKeySpec{
+			Prefix:    "sk-",
+			ExpiresIn: "20m",
+			Rotation:  &v1alpha1.RotationSpec{GracePeriod: "1h"},
+		},
+	}
+	r, c := newTestReconciler(now, apiKey)
+
+	result, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.Equal(t, time.Second, result.RequeueAfter)
+
+	var secret corev1.Secret
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: keyutil.SecretName}, &secret))
+	assert.Empty(t, secret.Annotations)
+	assert.NotEmpty(t, secret.Data[keyutil.SecretKey])
+	assert.NotEmpty(t, secret.Data[keyutil.SecondarySecretKey])
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
+	require.NotNil(t, updated.Status.SecretRef)
+	assert.Equal(t, keyutil.SecretName, updated.Status.SecretRef.Name)
+	require.NotNil(t, updated.Status.Primary)
+	assert.Equal(t, operatorKeyID(string(secret.Data[keyutil.SecretKey])), updated.Status.Primary.KeyID)
+	require.NotNil(t, updated.Status.Primary.ExpiresAt)
+	assertSameTime(t, now.Add(20*time.Minute), updated.Status.Primary.ExpiresAt.Time)
+	require.NotNil(t, updated.Status.Secondary)
+	assert.Equal(t, operatorKeyID(string(secret.Data[keyutil.SecondarySecretKey])), updated.Status.Secondary.KeyID)
+	require.NotNil(t, updated.Status.Secondary.ExpiresAt)
+	assertSameTime(t, now.Add(20*time.Minute), updated.Status.Secondary.ExpiresAt.Time, "secondary must not outlive the primary")
+}
+
+func TestReconcile_SpecChangeDoesNotAlterCurrentGenerationDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	persistedExpiry := now.Add(45 * time.Minute)
+	apiKey, secret := coherentObjects(now, "sk-current", &persistedExpiry)
+	apiKey.Spec.ExpiresIn = "48h"
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	require.NotNil(t, updated.Status.Primary)
+	require.NotNil(t, updated.Status.Primary.ExpiresAt)
+	assertSameTime(t, persistedExpiry, updated.Status.Primary.ExpiresAt.Time)
+}
+
+func TestReconcile_CoherentSecondaryRemainsAvailableWithinGracePeriod(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", nil)
+	secondaryExpiry := now.Add(30 * time.Minute)
+	apiKey.Status.Secondary = &v1alpha1.KeyStatus{
+		KeyID:     operatorKeyID("sk-secondary"),
+		ExpiresAt: &metav1.Time{Time: secondaryExpiry},
+	}
+	secret.Data[keyutil.SecondarySecretKey] = []byte("sk-secondary")
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	result, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Minute, result.RequeueAfter)
+
+	var updatedSecret corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &updatedSecret))
+	assert.Equal(t, "sk-current", string(updatedSecret.Data[keyutil.SecretKey]))
+	assert.Equal(t, "sk-secondary", string(updatedSecret.Data[keyutil.SecondarySecretKey]))
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	require.NotNil(t, updated.Status.Secondary)
+	assert.Equal(t, operatorKeyID("sk-secondary"), updated.Status.Secondary.KeyID)
+	assertSameTime(t, secondaryExpiry, updated.Status.Secondary.ExpiresAt.Time)
+}
+
+func TestReconcile_MissingDeclaredSecretGeneratesReplacement(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	oldExpiry := now.Add(time.Hour)
+	apiKey, _ := coherentObjects(now, "sk-missing", &oldExpiry)
+	apiKey.Spec.ExpiresIn = "2h"
+	r, c := newTestReconciler(now, apiKey)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var replacement corev1.Secret
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: keyutil.SecretName}, &replacement))
+	assert.NotEmpty(t, replacement.Data[keyutil.SecretKey])
+	assert.NotEqual(t, operatorKeyID("sk-missing"), operatorKeyID(string(replacement.Data[keyutil.SecretKey])))
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, operatorKeyID(string(replacement.Data[keyutil.SecretKey])), updated.Status.Primary.KeyID)
+	require.NotNil(t, updated.Status.Primary.ExpiresAt)
+	assertSameTime(t, now.Add(2*time.Hour), updated.Status.Primary.ExpiresAt.Time)
+}
+
+func TestReconcile_UnownedDeclaredSecretMarksAPIKeyPendingWithoutMutation(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", nil)
+	secret.OwnerReferences = nil
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var untouched corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &untouched))
+	assert.Equal(t, "sk-current", string(untouched.Data[keyutil.SecretKey]))
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhasePending, updated.Status.Phase)
+	condition := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	require.NotNil(t, condition)
+	assert.Equal(t, metav1.ConditionFalse, condition.Status)
+	assert.Equal(t, eventReasonSecretConflict, condition.Reason)
+}
+
+func TestReconcile_PrimaryMismatchGeneratesFreshCoherentPair(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	oldExpiry := now.Add(8 * time.Hour)
+	apiKey, secret := coherentObjects(now, "sk-original", &oldExpiry)
+	apiKey.Spec.ExpiresIn = "2h"
+	secret.Data[keyutil.SecretKey] = []byte("externally-replaced-value")
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var updatedSecret corev1.Secret
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: secret.Name}, &updatedSecret))
+	assert.NotEqual(t, "externally-replaced-value", string(updatedSecret.Data[keyutil.SecretKey]))
+	assert.NotEmpty(t, updatedSecret.Data[keyutil.SecondarySecretKey])
+	assert.Empty(t, updatedSecret.Annotations)
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, operatorKeyID(string(updatedSecret.Data[keyutil.SecretKey])), updated.Status.Primary.KeyID)
+	require.NotNil(t, updated.Status.Primary.ExpiresAt)
+	assertSameTime(t, now.Add(2*time.Hour), updated.Status.Primary.ExpiresAt.Time)
+	assert.Equal(t, operatorKeyID(string(updatedSecret.Data[keyutil.SecondarySecretKey])), updated.Status.Secondary.KeyID)
+}
+
+func TestReconcile_PartialRotationWriteRekeysAndAcknowledgesSchedule(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-old", nil)
+	apiKey.Spec.Rotation = &v1alpha1.RotationSpec{
+		RotateAt:    &metav1.Time{Time: now.Add(-time.Minute)},
+		GracePeriod: "30m",
+	}
+	// Simulate Secret-first rotation followed by a status write failure.
+	secret.Data[keyutil.SecondarySecretKey] = []byte("sk-old")
+	secret.Data[keyutil.SecretKey] = []byte("sk-partial-replacement")
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var updatedSecret corev1.Secret
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: secret.Name}, &updatedSecret))
+	assert.NotEqual(t, "sk-partial-replacement", string(updatedSecret.Data[keyutil.SecretKey]))
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, operatorKeyID(string(updatedSecret.Data[keyutil.SecretKey])), updated.Status.Primary.KeyID)
+	require.NotNil(t, updated.Status.LastRotatedAt)
+	assertSameTime(t, now, updated.Status.LastRotatedAt.Time)
+
+	firstPrimary := string(updatedSecret.Data[keyutil.SecretKey])
+	_, err = r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: secret.Name}, &updatedSecret))
+	assert.Equal(t, firstPrimary, string(updatedSecret.Data[keyutil.SecretKey]), "acknowledged rotation must not run again")
+}
+
+func TestReconcile_RotationCapsOutgoingDeadline(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		oldLifetime    time.Duration
+		newExpiresIn   string
+		gracePeriod    string
+		expectedExpiry time.Time
+	}{
+		{
+			name:           "old primary deadline",
+			oldLifetime:    20 * time.Minute,
+			newExpiresIn:   "2h",
+			gracePeriod:    "1h",
+			expectedExpiry: now.Add(20 * time.Minute),
+		},
+		{
+			name:           "replacement primary deadline",
+			oldLifetime:    2 * time.Hour,
+			newExpiresIn:   "10m",
+			gracePeriod:    "1h",
+			expectedExpiry: now.Add(10 * time.Minute),
+		},
+		{
+			name:           "grace deadline",
+			oldLifetime:    2 * time.Hour,
+			newExpiresIn:   "3h",
+			gracePeriod:    "5m",
+			expectedExpiry: now.Add(5 * time.Minute),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldExpiry := now.Add(tt.oldLifetime)
+			apiKey, secret := coherentObjects(now, "sk-old", &oldExpiry)
+			apiKey.Spec.ExpiresIn = tt.newExpiresIn
+			apiKey.Spec.Rotation = &v1alpha1.RotationSpec{
+				RotateAt:    &metav1.Time{Time: now.Add(-time.Minute)},
+				GracePeriod: tt.gracePeriod,
+			}
+			r, c := newTestReconciler(now, apiKey, secret)
+
+			_, err := r.Reconcile(context.Background(), reconcileRequest())
+			require.NoError(t, err)
+
+			var updated v1alpha1.APIKey
+			require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+			require.NotNil(t, updated.Status.Secondary)
+			require.NotNil(t, updated.Status.Secondary.ExpiresAt)
+			assertSameTime(t, tt.expectedExpiry, updated.Status.Secondary.ExpiresAt.Time)
+			assert.Equal(t, operatorKeyID("sk-old"), updated.Status.Secondary.KeyID)
+
+			var updatedSecret corev1.Secret
+			require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: secret.Name}, &updatedSecret))
+			assert.Equal(t, "sk-old", string(updatedSecret.Data[keyutil.SecondarySecretKey]))
+			assert.Equal(t, updated.Status.Primary.KeyID, operatorKeyID(string(updatedSecret.Data[keyutil.SecretKey])))
+		})
+	}
+}
+
+func TestReconcile_SecondaryCleanupWritesSecretBeforeStatus(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", nil)
+	secret.Data[keyutil.SecondarySecretKey] = []byte("sk-old")
+	apiKey.Status.Secondary = &v1alpha1.KeyStatus{
+		KeyID:     operatorKeyID("sk-old"),
+		ExpiresAt: &metav1.Time{Time: now},
+	}
+
+	secretGoneBeforeStatus := false
 	c := fake.NewClientBuilder().
-		WithScheme(s).
+		WithScheme(setupScheme()).
 		WithObjects(apiKey, secret).
-		WithStatusSubresource(apiKey).
+		WithStatusSubresource(&v1alpha1.APIKey{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Update: func(ctx context.Context, delegate client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-				if _, ok := obj.(*corev1.Secret); ok {
-					return assert.AnError
+			SubResourceUpdate: func(ctx context.Context, delegate client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if subResourceName == "status" {
+					updatedAPIKey := obj.(*v1alpha1.APIKey)
+					if updatedAPIKey.Status.Secondary == nil {
+						var current corev1.Secret
+						require.NoError(t, delegate.Get(ctx, types.NamespacedName{Namespace: secret.Namespace, Name: secret.Name}, &current))
+						_, present := current.Data[keyutil.SecondarySecretKey]
+						secretGoneBeforeStatus = !present
+					}
 				}
-				return delegate.Update(ctx, obj, opts...)
+				return delegate.SubResource(subResourceName).Update(ctx, obj, opts...)
 			},
 		}).
 		Build()
-	recorder := &capturedEventRecorder{}
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
+	r := &APIKeyReconciler{Client: c, Clock: clocktesting.NewFakeClock(now)}
 
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.ErrorIs(t, err, assert.AnError)
-	requireCapturedEvent(t, recorder, capturedEvent{
-		EventType: corev1.EventTypeWarning,
-		Reason:    eventReasonRotationFailed,
-		Action:    eventActionRotateSecret,
-		Note:      `Failed to update Secret "llm-api-key" with rotated API key material`,
-	})
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.True(t, secretGoneBeforeStatus)
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Nil(t, updated.Status.Secondary)
 }
 
-func TestReconcile_RotationStatusUpdateFailureEmitsEvent(t *testing.T) {
-	s := setupScheme()
-	apiKey, secret := newDueRotationObjects(types.UID("rotation-status-failure-uid"))
+func TestReconcile_ExpiryDeletesOwnedSecretWithUIDAndPreservesPrimary(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", &now)
+	secret.Data[keyutil.SecondarySecretKey] = []byte("sk-old")
+	apiKey.Status.Secondary = &v1alpha1.KeyStatus{KeyID: operatorKeyID("sk-old"), ExpiresAt: &metav1.Time{Time: now.Add(time.Hour)}}
+
+	var deletedWithUID types.UID
 	c := fake.NewClientBuilder().
-		WithScheme(s).
+		WithScheme(setupScheme()).
 		WithObjects(apiKey, secret).
-		WithStatusSubresource(apiKey).
+		WithStatusSubresource(&v1alpha1.APIKey{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+			Delete: func(ctx context.Context, delegate client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				options := (&client.DeleteOptions{}).ApplyOptions(opts)
+				require.NotNil(t, options.Preconditions)
+				require.NotNil(t, options.Preconditions.UID)
+				deletedWithUID = *options.Preconditions.UID
+				return delegate.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &APIKeyReconciler{Client: c, Clock: clocktesting.NewFakeClock(now)}
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.Equal(t, secret.UID, deletedWithUID)
+
+	var removed corev1.Secret
+	err = c.Get(context.Background(), types.NamespacedName{Namespace: secret.Namespace, Name: secret.Name}, &removed)
+	assert.True(t, apierrors.IsNotFound(err))
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhaseExpired, updated.Status.Phase)
+	require.NotNil(t, updated.Status.Primary)
+	assert.Equal(t, operatorKeyID("sk-current"), updated.Status.Primary.KeyID)
+	require.NotNil(t, updated.Status.Primary.ExpiresAt)
+	assertSameTime(t, now, updated.Status.Primary.ExpiresAt.Time)
+	assert.Nil(t, updated.Status.Secondary)
+	assert.Nil(t, updated.Status.SecretRef)
+}
+
+func TestReconcile_ExpiryDoesNotDeleteUnownedReplacement(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", &now)
+	secret.OwnerReferences = nil
+	secret.Data[keyutil.SecretKey] = []byte("replacement-owned-by-someone-else")
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var untouched corev1.Secret
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: secret.Namespace, Name: secret.Name}, &untouched))
+	assert.Equal(t, "replacement-owned-by-someone-else", string(untouched.Data[keyutil.SecretKey]))
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhaseExpired, updated.Status.Phase)
+	assert.Nil(t, updated.Status.SecretRef)
+}
+
+func TestReconcile_ExpiryDeleteFailureDoesNotClaimCompletion(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", &now)
+	c := fake.NewClientBuilder().
+		WithScheme(setupScheme()).
+		WithObjects(apiKey, secret).
+		WithStatusSubresource(&v1alpha1.APIKey{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
 				return assert.AnError
 			},
 		}).
 		Build()
-	recorder := &capturedEventRecorder{}
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
+	r := &APIKeyReconciler{Client: c, Clock: clocktesting.NewFakeClock(now)}
 
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
 	require.ErrorIs(t, err, assert.AnError)
-	requireCapturedEvent(t, recorder, capturedEvent{
-		EventType: corev1.EventTypeWarning,
-		Reason:    eventReasonRotationFailed,
-		Action:    eventActionPersistRotationStatus,
-		Note:      `Failed to persist APIKey status after rotating Secret "llm-api-key"`,
-	})
+
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
+	require.NotNil(t, updated.Status.SecretRef)
+	var retained corev1.Secret
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: secret.Namespace, Name: secret.Name}, &retained))
 }
 
-func TestReconcile_RotationWithNewExpiresIn(t *testing.T) {
-	s := setupScheme()
-	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
-	apiKeyUID := types.UID("rotation-expires-uid")
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(&metav1.ObjectMeta{Name: "default", UID: apiKeyUID}, v1alpha1.GroupVersion.WithKind("APIKey")),
-			},
-		},
-		Data: map[string][]byte{
-			"apiKey": []byte(rawKey),
-		},
-	}
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "default",
-			Namespace:         "team-alpha",
-			UID:               apiKeyUID,
-			CreationTimestamp: metav1.Now(),
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix:    "sk-",
-			ExpiresIn: "48h", // New expiration for the rotated key
-			Rotation: &v1alpha1.RotationSpec{
-				RotateAt: &metav1.Time{Time: time.Now().Add(-1 * time.Minute)},
-			},
-		},
-		Status: v1alpha1.APIKeyStatus{
-			Primary: &v1alpha1.KeyStatus{
-				KeyID: "oldkeyid",
-			},
-			Phase: v1alpha1.PhaseActive,
-			SecretRef: &v1alpha1.SecretReference{
-				Name: "llm-api-key",
-			},
-		},
+func TestReconcile_ExpiredStatusFinishesLegacySecretCleanup(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(-time.Minute)
+	apiKey, secret := coherentObjects(now, "sk-current", &expiresAt)
+	apiKey.Status.Phase = v1alpha1.PhaseExpired
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+
+	var removed corev1.Secret
+	err = c.Get(context.Background(), types.NamespacedName{Namespace: secret.Namespace, Name: secret.Name}, &removed)
+	assert.True(t, apierrors.IsNotFound(err))
+	var updated v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhaseExpired, updated.Status.Phase)
+	assert.Nil(t, updated.Status.SecretRef)
+	assert.Nil(t, updated.Status.Secondary)
+	assert.Equal(t, operatorKeyID("sk-current"), updated.Status.Primary.KeyID)
+}
+
+func TestReconcile_RotationStatusConflictUsesLatestSpecOnRecovery(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	oldExpiry := now.Add(4 * time.Hour)
+	apiKey, secret := coherentObjects(now, "sk-old", &oldExpiry)
+	apiKey.Spec.ExpiresIn = "2h"
+	apiKey.Spec.Rotation = &v1alpha1.RotationSpec{
+		RotateAt:    &metav1.Time{Time: now.Add(-time.Minute)},
+		GracePeriod: "30m",
 	}
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
+	conflictInjected := false
+	c := fake.NewClientBuilder().
+		WithScheme(setupScheme()).
+		WithObjects(apiKey, secret).
+		WithStatusSubresource(&v1alpha1.APIKey{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, delegate client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if subResourceName == "status" && !conflictInjected {
+					conflictInjected = true
+					var latest v1alpha1.APIKey
+					require.NoError(t, delegate.Get(ctx, reconcileRequest().NamespacedName, &latest))
+					latest.Spec.ExpiresIn = "5m"
+					latest.Spec.Rotation.RotateAt = &metav1.Time{Time: now.Add(-30 * time.Second)}
+					require.NoError(t, delegate.Update(ctx, &latest))
+					return apierrors.NewConflict(v1alpha1.GroupVersion.WithResource("apikeys").GroupResource(), obj.GetName(), assert.AnError)
+				}
+				return delegate.SubResource(subResourceName).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &APIKeyReconciler{Client: c, Clock: clocktesting.NewFakeClock(now)}
 
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
+	require.True(t, apierrors.IsConflict(err))
+
+	var staleStatus v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &staleStatus))
+	assert.Equal(t, operatorKeyID("sk-old"), staleStatus.Status.Primary.KeyID)
+	assert.Nil(t, staleStatus.Status.LastRotatedAt)
+	assert.Equal(t, "5m", staleStatus.Spec.ExpiresIn)
+	var partiallyRotated corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &partiallyRotated))
+	firstReplacement := string(partiallyRotated.Data[keyutil.SecretKey])
+	assert.NotEqual(t, "sk-old", firstReplacement)
+
+	_, err = r.Reconcile(context.Background(), reconcileRequest())
 	require.NoError(t, err)
 
 	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-
-	// ExpiresAt should be ~48h from now (based on rotation time, not creation time)
-	require.NotNil(t, updated.Status.Primary, "expected primary to be set")
-	assert.False(t, updated.Status.Primary.ExpiresAt.IsZero(), "expected primary.expiresAt to be set")
-	expiresIn := time.Until(updated.Status.Primary.ExpiresAt.Time)
-	assert.Greater(t, expiresIn, 47*time.Hour, "expected expiresAt ~48h from now")
-	assert.Less(t, expiresIn, 49*time.Hour, "expected expiresAt ~48h from now")
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	require.NotNil(t, updated.Status.Primary)
+	require.NotNil(t, updated.Status.Primary.ExpiresAt)
+	assertSameTime(t, now.Add(5*time.Minute), updated.Status.Primary.ExpiresAt.Time)
+	require.NotNil(t, updated.Status.LastRotatedAt)
+	assertSameTime(t, now, updated.Status.LastRotatedAt.Time)
+	var recovered corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &recovered))
+	assert.NotEqual(t, firstReplacement, string(recovered.Data[keyutil.SecretKey]))
+	assert.Equal(t, updated.Status.Primary.KeyID, operatorKeyID(string(recovered.Data[keyutil.SecretKey])))
 }
 
-func TestReconcile_GracePeriodExpiry(t *testing.T) {
-	s := setupScheme()
-	rawKey := "sk-llmgw-Jx3kLmNpQrStUvWxYzAbCdEfGh0123456789AB"
-	secondaryKey := "sk-llmgw-OldKeyOldKeyOldKeyOldKeyOldKeyABCD"
-	apiKeyUID := types.UID("grace-period-uid")
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(&metav1.ObjectMeta{Name: "default", UID: apiKeyUID}, v1alpha1.GroupVersion.WithKind("APIKey")),
+func TestReconcile_ExpiryWaitsForSecretDeletionToFinish(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", &now)
+	deleteCalls := 0
+	c := fake.NewClientBuilder().
+		WithScheme(setupScheme()).
+		WithObjects(apiKey, secret).
+		WithStatusSubresource(&v1alpha1.APIKey{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, delegate client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteCalls++
+				if deleteCalls == 1 {
+					// Simulate an API server accepting deletion while a finalizer keeps
+					// the Secret readable.
+					return nil
+				}
+				return delegate.Delete(ctx, obj, opts...)
 			},
-		},
-		Data: map[string][]byte{
-			"apiKey":          []byte(rawKey),
-			"secondaryApiKey": []byte(secondaryKey),
-		},
-	}
-	pastTime := metav1.NewTime(time.Now().Add(-1 * time.Hour))
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
-			Namespace: "team-alpha",
-			UID:       apiKeyUID,
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-		},
-		Status: v1alpha1.APIKeyStatus{
-			Primary: &v1alpha1.KeyStatus{
-				KeyID: "currentid",
-			},
-			Phase: v1alpha1.PhaseActive,
-			SecretRef: &v1alpha1.SecretReference{
-				Name: "llm-api-key",
-			},
-			Secondary: &v1alpha1.KeyStatus{
-				KeyID:     "prevkeyid",
-				ExpiresAt: &metav1.Time{Time: pastTime.Time}, // Grace period already expired
-			},
-		},
-	}
+		}).
+		Build()
+	r := &APIKeyReconciler{Client: c, Clock: clocktesting.NewFakeClock(now)}
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, secret).WithStatusSubresource(apiKey).Build()
-	recorder := events.NewFakeRecorder(10)
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
+	result, err := r.Reconcile(context.Background(), reconcileRequest())
 	require.NoError(t, err)
-	requireEvent(t, recorder, `Normal SecondaryKeyRemoved Removed expired secondary API key from Secret "llm-api-key"`)
+	assert.Equal(t, time.Second, result.RequeueAfter)
+	var pending v1alpha1.APIKey
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &pending))
+	assert.Equal(t, v1alpha1.PhaseActive, pending.Status.Phase)
+	require.NotNil(t, pending.Status.SecretRef)
+	var retained corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &retained))
 
-	// Verify status.secondaryKey was cleared
+	result, err = r.Reconcile(context.Background(), reconcileRequest())
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+	assert.Equal(t, 2, deleteCalls)
 	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	assert.Nil(t, updated.Status.Secondary, "expected status.secondaryKey to be cleared after grace period")
-
-	// Verify secondaryApiKey was removed from Secret
-	var updatedSecret corev1.Secret
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &updatedSecret)
-	_, hasPrevKey := updatedSecret.Data["secondaryApiKey"]
-	assert.False(t, hasPrevKey, "expected secondaryApiKey to be removed from Secret")
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhaseExpired, updated.Status.Phase)
+	assert.Nil(t, updated.Status.SecretRef)
 }
 
-func TestReconcile_SecretConflictNotOwned(t *testing.T) {
-	s := setupScheme()
+func TestReconcile_DeletedUnownedConflictRequeuesSingleton(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", nil)
+	secret.OwnerReferences = nil
+	r, c := newTestReconciler(now, apiKey, secret)
 
-	// Pre-existing Secret NOT owned by any APIKey
-	unownedSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "llm-api-key",
-			Namespace: "team-alpha",
-		},
-		Data: map[string][]byte{
-			"apiKey": []byte("someone-elses-key"),
-		},
-	}
-
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
-			Namespace: "team-alpha",
-			UID:       "test-uid-123",
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-		},
-	}
-
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey, unownedSecret).WithStatusSubresource(apiKey).Build()
-	recorder := events.NewFakeRecorder(10)
-	r := &APIKeyReconciler{Client: c, Recorder: recorder}
-	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"}}
-
-	_, err := r.Reconcile(context.Background(), request)
+	_, err := r.Reconcile(context.Background(), reconcileRequest())
 	require.NoError(t, err)
-	requireEvent(t, recorder, `Warning SecretConflict Secret "llm-api-key" already exists but is not owned by this APIKey`)
+	require.NoError(t, c.Delete(context.Background(), secret))
 
-	// Verify the unowned Secret data was NOT overwritten
-	var secret corev1.Secret
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &secret)
-	assert.Equal(t, "someone-elses-key", string(secret.Data["apiKey"]), "expected unowned Secret data to remain unchanged")
+	requests := r.secretToAPIKey(context.Background(), secret)
+	require.Len(t, requests, 1)
+	assert.Equal(t, reconcileRequest(), requests[0])
+	unrelated := secret.DeepCopy()
+	unrelated.Name = "unrelated"
+	assert.Empty(t, r.secretToAPIKey(context.Background(), unrelated))
+	_, err = r.Reconcile(context.Background(), requests[0])
+	require.NoError(t, err)
 
-	// Verify APIKey is marked NotReady with SecretConflict
+	var replacement corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &replacement))
+	assert.True(t, hasExactAPIKeyControllerOwner(&replacement, apiKey))
 	var updated v1alpha1.APIKey
-	c.Get(context.Background(), types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated)
-	assert.Equal(t, v1alpha1.PhasePending, updated.Status.Phase)
-
-	_, err = r.Reconcile(context.Background(), request)
-	require.NoError(t, err)
-	requireNoEvent(t, recorder)
+	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
+	assert.Equal(t, v1alpha1.PhaseActive, updated.Status.Phase)
 }
 
-func TestGracePeriod_Default(t *testing.T) {
+func TestHasExactAPIKeyControllerOwner(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", nil)
+	assert.True(t, hasExactAPIKeyControllerOwner(secret, apiKey))
+
+	tests := map[string]func(*v1alpha1.APIKey, *corev1.Secret){
+		"API version": func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+			secret.OwnerReferences[0].APIVersion = "kaito.sh/v9"
+		},
+		"kind": func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+			secret.OwnerReferences[0].Kind = "Other"
+		},
+		"name": func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+			secret.OwnerReferences[0].Name = "other"
+		},
+		"owner UID": func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+			secret.OwnerReferences[0].UID = "other"
+		},
+		"APIKey UID": func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
+			apiKey.UID = "other"
+		},
+		"controller flag": func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+			controller := false
+			secret.OwnerReferences[0].Controller = &controller
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			candidateAPIKey := apiKey.DeepCopy()
+			candidateSecret := secret.DeepCopy()
+			mutate(candidateAPIKey, candidateSecret)
+			assert.False(t, hasExactAPIKeyControllerOwner(candidateSecret, candidateAPIKey))
+		})
+	}
+}
+
+func TestGracePeriod(t *testing.T) {
 	r := &APIKeyReconciler{}
-
-	// No rotation config => the 24h default applies. Asserted against the
-	// literal so a change to the constant has to be made deliberately.
-	apiKey := &v1alpha1.APIKey{
-		Spec: v1alpha1.APIKeySpec{Prefix: "sk-"},
-	}
+	apiKey := &v1alpha1.APIKey{Spec: v1alpha1.APIKeySpec{Prefix: "sk-"}}
 	assert.Equal(t, 24*time.Hour, v1alpha1.DefaultGracePeriod)
 	assert.Equal(t, v1alpha1.DefaultGracePeriod, r.gracePeriod(apiKey))
 
-	// Empty rotation struct (no GracePeriod set) => still default.
-	apiKey.Spec.Rotation = &v1alpha1.RotationSpec{}
+	apiKey.Spec.Rotation = &v1alpha1.RotationSpec{GracePeriod: "not-a-duration"}
 	assert.Equal(t, v1alpha1.DefaultGracePeriod, r.gracePeriod(apiKey))
-
-	// Unparseable GracePeriod => fall back to default.
-	apiKey.Spec.Rotation.GracePeriod = "not-a-duration"
-	assert.Equal(t, v1alpha1.DefaultGracePeriod, r.gracePeriod(apiKey))
-
-	// Explicit GracePeriod overrides default.
 	apiKey.Spec.Rotation.GracePeriod = "30m"
 	assert.Equal(t, 30*time.Minute, r.gracePeriod(apiKey))
-}
-
-func TestReconcile_SecondaryKeyPersistsWithinDefaultGracePeriod(t *testing.T) {
-	s := setupScheme()
-	apiKey := &v1alpha1.APIKey{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
-			Namespace: "team-alpha",
-		},
-		Spec: v1alpha1.APIKeySpec{
-			Prefix: "sk-",
-		},
-	}
-
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(apiKey).WithStatusSubresource(apiKey).Build()
-	r := &APIKeyReconciler{Client: c}
-
-	// First reconcile creates the Secret + both keys with the default grace period.
-	_, err := r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-
-	var updated v1alpha1.APIKey
-	require.NoError(t, c.Get(context.Background(),
-		types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &updated))
-	require.NotNil(t, updated.Status.Secondary, "expected secondary key to be set on creation")
-	require.NotNil(t, updated.Status.Secondary.ExpiresAt, "expected secondary.expiresAt to be set")
-	// The secondary generated at creation expires one grace period out, so a
-	// key that is never rotated loses its secondary after 24h. See the
-	// spec.rotation.gracePeriod field docs.
-	assert.WithinDuration(t, time.Now().Add(v1alpha1.DefaultGracePeriod),
-		updated.Status.Secondary.ExpiresAt.Time, time.Minute,
-		"expected secondary.expiresAt one default grace period from creation")
-
-	// Second reconcile, still well within the grace period: the secondary key
-	// must NOT be cleaned up.
-	_, err = r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Namespace: "team-alpha", Name: "default"},
-	})
-	require.NoError(t, err)
-
-	var after v1alpha1.APIKey
-	require.NoError(t, c.Get(context.Background(),
-		types.NamespacedName{Namespace: "team-alpha", Name: "default"}, &after))
-	assert.NotNil(t, after.Status.Secondary, "secondary key should remain under default grace period")
-
-	var secret corev1.Secret
-	require.NoError(t, c.Get(context.Background(),
-		types.NamespacedName{Namespace: "team-alpha", Name: "llm-api-key"}, &secret))
-	_, hasPrev := secret.Data["secondaryApiKey"]
-	assert.True(t, hasPrev, "secondaryApiKey should remain in Secret under default grace period")
 }
