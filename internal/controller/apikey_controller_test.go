@@ -92,6 +92,12 @@ func coherentObjects(now time.Time, rawPrimary string, expiresAt *time.Time) (*v
 			Name:      keyutil.SecretName,
 			Namespace: apiKey.Namespace,
 			UID:       types.UID("secret-uid"),
+			Labels: map[string]string{
+				managedByMetadataKey: managedByValue,
+			},
+			Annotations: map[string]string{
+				managedByMetadataKey: managedByValue,
+			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(apiKey, v1alpha1.GroupVersion.WithKind("APIKey")),
 			},
@@ -118,7 +124,7 @@ func TestReconcile_NotFound(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestReconcile_CreationPublishesCompleteStatusWithoutAnnotations(t *testing.T) {
+func TestReconcile_CreationPublishesCompleteStatusWithManagedMetadata(t *testing.T) {
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	apiKey := &v1alpha1.APIKey{
 		ObjectMeta: metav1.ObjectMeta{
@@ -141,7 +147,8 @@ func TestReconcile_CreationPublishesCompleteStatusWithoutAnnotations(t *testing.
 
 	var secret corev1.Secret
 	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: keyutil.SecretName}, &secret))
-	assert.Empty(t, secret.Annotations)
+	assert.Equal(t, managedByValue, secret.Annotations[managedByMetadataKey])
+	assert.Equal(t, managedByValue, secret.Labels[managedByMetadataKey])
 	assert.NotEmpty(t, secret.Data[keyutil.SecretKey])
 	assert.NotEmpty(t, secret.Data[keyutil.SecondarySecretKey])
 
@@ -175,6 +182,95 @@ func TestReconcile_SpecChangeDoesNotAlterCurrentGenerationDeadline(t *testing.T)
 	require.NotNil(t, updated.Status.Primary)
 	require.NotNil(t, updated.Status.Primary.ExpiresAt)
 	assertSameTime(t, persistedExpiry, updated.Status.Primary.ExpiresAt.Time)
+}
+
+func TestReconcile_BackfillsManagedMetadataWithoutChangingKeyState(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(45 * time.Minute)
+
+	tests := []struct {
+		name            string
+		annotationValue string
+		labelValue      string
+	}{
+		{name: "missing"},
+		{name: "wrong", annotationValue: "another-controller", labelValue: "another-controller"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiKey, secret := coherentObjects(now, "sk-current", &expiresAt)
+			secret.Annotations = map[string]string{"example.com/note": "keep"}
+			secret.Labels = map[string]string{"example.com/team": "keep"}
+			if tt.annotationValue != "" {
+				secret.Annotations[managedByMetadataKey] = tt.annotationValue
+			}
+			if tt.labelValue != "" {
+				secret.Labels[managedByMetadataKey] = tt.labelValue
+			}
+			expectedData := secret.DeepCopy().Data
+			expectedOwners := append([]metav1.OwnerReference(nil), secret.OwnerReferences...)
+			expectedStatus := apiKey.DeepCopy().Status
+			r, c := newTestReconciler(now, apiKey, secret)
+
+			_, err := r.Reconcile(context.Background(), reconcileRequest())
+			require.NoError(t, err)
+
+			var updatedSecret corev1.Secret
+			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &updatedSecret))
+			assert.Equal(t, expectedData, updatedSecret.Data)
+			assert.Equal(t, expectedOwners, updatedSecret.OwnerReferences)
+			assert.Equal(t, managedByValue, updatedSecret.Annotations[managedByMetadataKey])
+			assert.Equal(t, managedByValue, updatedSecret.Labels[managedByMetadataKey])
+			assert.Equal(t, "keep", updatedSecret.Annotations["example.com/note"])
+			assert.Equal(t, "keep", updatedSecret.Labels["example.com/team"])
+
+			var updatedAPIKey v1alpha1.APIKey
+			require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updatedAPIKey))
+			assert.Equal(t, expectedStatus.Phase, updatedAPIKey.Status.Phase)
+			assert.Equal(t, expectedStatus.SecretRef, updatedAPIKey.Status.SecretRef)
+			require.NotNil(t, expectedStatus.Primary)
+			require.NotNil(t, updatedAPIKey.Status.Primary)
+			assert.Equal(t, expectedStatus.Primary.KeyID, updatedAPIKey.Status.Primary.KeyID)
+			require.NotNil(t, expectedStatus.Primary.ExpiresAt)
+			require.NotNil(t, updatedAPIKey.Status.Primary.ExpiresAt)
+			assertSameTime(t, expectedStatus.Primary.ExpiresAt.Time, updatedAPIKey.Status.Primary.ExpiresAt.Time)
+			assert.Equal(t, expectedStatus.Secondary, updatedAPIKey.Status.Secondary)
+			assert.Equal(t, expectedStatus.LastRotatedAt, updatedAPIKey.Status.LastRotatedAt)
+			assert.Equal(t, expectedStatus.LastSyncedAt, updatedAPIKey.Status.LastSyncedAt)
+			require.Len(t, updatedAPIKey.Status.Conditions, len(expectedStatus.Conditions))
+			for i := range expectedStatus.Conditions {
+				expectedCondition := expectedStatus.Conditions[i]
+				actualCondition := updatedAPIKey.Status.Conditions[i]
+				assert.Equal(t, expectedCondition.Type, actualCondition.Type)
+				assert.Equal(t, expectedCondition.Status, actualCondition.Status)
+				assert.Equal(t, expectedCondition.ObservedGeneration, actualCondition.ObservedGeneration)
+				assert.Equal(t, expectedCondition.Reason, actualCondition.Reason)
+				assert.Equal(t, expectedCondition.Message, actualCondition.Message)
+				assertSameTime(t, expectedCondition.LastTransitionTime.Time, actualCondition.LastTransitionTime.Time)
+			}
+		})
+	}
+}
+
+func TestUpdateSecretWithRetryDoesNotPersistMetadataWhenMutationFails(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	apiKey, secret := coherentObjects(now, "sk-current", nil)
+	secret.Annotations = nil
+	secret.Labels = nil
+	r, c := newTestReconciler(now, apiKey, secret)
+
+	err := r.updateSecretWithRetry(context.Background(), secret, apiKey, func(candidate *corev1.Secret) (bool, error) {
+		candidate.Data[keyutil.SecretKey] = []byte("must-not-persist")
+		return true, assert.AnError
+	})
+	require.ErrorIs(t, err, assert.AnError)
+
+	var unchanged corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &unchanged))
+	assert.Equal(t, "sk-current", string(unchanged.Data[keyutil.SecretKey]))
+	assert.Empty(t, unchanged.Annotations)
+	assert.Empty(t, unchanged.Labels)
 }
 
 func TestReconcile_CoherentSecondaryRemainsAvailableWithinGracePeriod(t *testing.T) {
@@ -228,6 +324,10 @@ func TestReconcile_UnownedDeclaredSecretMarksAPIKeyPendingWithoutMutation(t *tes
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	apiKey, secret := coherentObjects(now, "sk-current", nil)
 	secret.OwnerReferences = nil
+	delete(secret.Annotations, managedByMetadataKey)
+	delete(secret.Labels, managedByMetadataKey)
+	secret.Annotations["example.com/note"] = "keep"
+	secret.Labels["example.com/team"] = "keep"
 	r, c := newTestReconciler(now, apiKey, secret)
 
 	_, err := r.Reconcile(context.Background(), reconcileRequest())
@@ -236,6 +336,10 @@ func TestReconcile_UnownedDeclaredSecretMarksAPIKeyPendingWithoutMutation(t *tes
 	var untouched corev1.Secret
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &untouched))
 	assert.Equal(t, "sk-current", string(untouched.Data[keyutil.SecretKey]))
+	assert.NotContains(t, untouched.Annotations, managedByMetadataKey)
+	assert.NotContains(t, untouched.Labels, managedByMetadataKey)
+	assert.Equal(t, "keep", untouched.Annotations["example.com/note"])
+	assert.Equal(t, "keep", untouched.Labels["example.com/team"])
 	var updated v1alpha1.APIKey
 	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
 	assert.Equal(t, v1alpha1.PhasePending, updated.Status.Phase)
@@ -251,6 +355,8 @@ func TestReconcile_PrimaryMismatchGeneratesFreshCoherentPair(t *testing.T) {
 	apiKey, secret := coherentObjects(now, "sk-original", &oldExpiry)
 	apiKey.Spec.ExpiresIn = "2h"
 	secret.Data[keyutil.SecretKey] = []byte("externally-replaced-value")
+	secret.Annotations = nil
+	secret.Labels = nil
 	r, c := newTestReconciler(now, apiKey, secret)
 
 	_, err := r.Reconcile(context.Background(), reconcileRequest())
@@ -260,7 +366,8 @@ func TestReconcile_PrimaryMismatchGeneratesFreshCoherentPair(t *testing.T) {
 	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: secret.Name}, &updatedSecret))
 	assert.NotEqual(t, "externally-replaced-value", string(updatedSecret.Data[keyutil.SecretKey]))
 	assert.NotEmpty(t, updatedSecret.Data[keyutil.SecondarySecretKey])
-	assert.Empty(t, updatedSecret.Annotations)
+	assert.Equal(t, managedByValue, updatedSecret.Annotations[managedByMetadataKey])
+	assert.Equal(t, managedByValue, updatedSecret.Labels[managedByMetadataKey])
 
 	var updated v1alpha1.APIKey
 	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
@@ -357,6 +464,7 @@ func TestReconcile_RotationCapsOutgoingDeadline(t *testing.T) {
 			require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: apiKey.Namespace, Name: secret.Name}, &updatedSecret))
 			assert.Equal(t, "sk-old", string(updatedSecret.Data[keyutil.SecondarySecretKey]))
 			assert.Equal(t, updated.Status.Primary.KeyID, operatorKeyID(string(updatedSecret.Data[keyutil.SecretKey])))
+			assert.True(t, hasManagedSecretMetadata(&updatedSecret))
 		})
 	}
 }
@@ -399,6 +507,9 @@ func TestReconcile_SecondaryCleanupWritesSecretBeforeStatus(t *testing.T) {
 	var updated v1alpha1.APIKey
 	require.NoError(t, c.Get(context.Background(), reconcileRequest().NamespacedName, &updated))
 	assert.Nil(t, updated.Status.Secondary)
+	var updatedSecret corev1.Secret
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(secret), &updatedSecret))
+	assert.True(t, hasManagedSecretMetadata(&updatedSecret))
 }
 
 func TestReconcile_ExpiryDeletesOwnedSecretWithUIDAndPreservesPrimary(t *testing.T) {

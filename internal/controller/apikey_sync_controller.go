@@ -26,9 +26,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
@@ -42,8 +45,9 @@ const eventReasonInvalidAPIKeyState = "InvalidAPIKeyState"
 // keyindex.Index in sync with coherent Active APIKey status.
 type IndexSyncer struct {
 	client.Client
-	KeyIndex *keyindex.Index
-	Recorder events.EventRecorder
+	APIReader client.Reader
+	KeyIndex  *keyindex.Index
+	Recorder  events.EventRecorder
 }
 
 type statusKey struct {
@@ -100,13 +104,39 @@ func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Res
 	}
 
 	secretName := types.NamespacedName{Namespace: req.Namespace, Name: apiKey.Status.SecretRef.Name}
+	secretMetadata := &metav1.PartialObjectMetadata{}
+	secretMetadata.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+	if err := s.Get(ctx, secretName, secretMetadata); err != nil {
+		s.clearInvalidState(&apiKey, req.Namespace, "APIKey declared Secret metadata is unavailable; authorization index was cleared")
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	if !hasManagedSecretAnnotation(secretMetadata) {
+		s.clearInvalidState(&apiKey, req.Namespace, "APIKey declared Secret does not have the required managed annotation; authorization index was cleared")
+		return ctrl.Result{}, nil
+	}
+	if !hasExactAPIKeyControllerOwner(secretMetadata, &apiKey) {
+		s.clearInvalidState(&apiKey, req.Namespace, "APIKey declared Secret metadata does not have the expected APIKey controller owner; authorization index was cleared")
+		return ctrl.Result{}, nil
+	}
+	if s.APIReader == nil {
+		s.clearInvalidState(&apiKey, req.Namespace, "APIKey Secret payload reader is unavailable; authorization index was cleared")
+		return ctrl.Result{}, fmt.Errorf("APIReader is required for Secret payload reads")
+	}
+
 	var secret corev1.Secret
-	if err := s.Get(ctx, secretName, &secret); err != nil {
+	if err := s.APIReader.Get(ctx, secretName, &secret); err != nil {
 		s.clearInvalidState(&apiKey, req.Namespace, "APIKey declared Secret is unavailable; authorization index was cleared")
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+	if !hasManagedSecretAnnotation(&secret) {
+		s.clearInvalidState(&apiKey, req.Namespace, "APIKey declared Secret managed annotation changed while reading it; authorization index was cleared")
+		return ctrl.Result{}, nil
 	}
 
 	entries, err := buildNamespaceEntries(&apiKey, &secret)
@@ -121,6 +151,9 @@ func (s *IndexSyncer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Res
 }
 
 func buildNamespaceEntries(apiKey *v1alpha1.APIKey, secret *corev1.Secret) (map[string]keyindex.TenantRecord, error) {
+	if !hasManagedSecretAnnotation(secret) {
+		return nil, fmt.Errorf("declared Secret does not have the required managed annotation")
+	}
 	if !secret.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("declared Secret is being deleted")
 	}
@@ -128,14 +161,7 @@ func buildNamespaceEntries(apiKey *v1alpha1.APIKey, secret *corev1.Secret) (map[
 		return nil, fmt.Errorf("declared Secret reference does not match the observed Secret")
 	}
 
-	owner := metav1.GetControllerOf(secret)
-	if owner == nil ||
-		owner.APIVersion != v1alpha1.GroupVersion.String() ||
-		owner.Kind != "APIKey" ||
-		owner.Name != keyutil.SingletonName ||
-		owner.UID == "" ||
-		apiKey.UID == "" ||
-		owner.UID != apiKey.UID {
+	if !hasExactAPIKeyControllerOwner(secret, apiKey) {
 		return nil, fmt.Errorf("declared Secret does not have the expected APIKey controller owner")
 	}
 
@@ -242,10 +268,35 @@ func secretToAPIKey(_ context.Context, obj client.Object) []reconcile.Request {
 	}}}
 }
 
+func managedSecretWatchPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return e.Object != nil && hasManagedSecretAnnotation(e.Object)
+		},
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			return e.Object != nil && hasManagedSecretAnnotation(e.Object)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return (e.ObjectOld != nil && hasManagedSecretAnnotation(e.ObjectOld)) ||
+				(e.ObjectNew != nil && hasManagedSecretAnnotation(e.ObjectNew))
+		},
+		GenericFunc: func(e event.GenericEvent) bool {
+			return e.Object != nil && hasManagedSecretAnnotation(e.Object)
+		},
+	}
+}
+
 // SetupWithManager registers the IndexSyncer with the Manager.
 func (s *IndexSyncer) SetupWithManager(mgr ctrl.Manager) error {
+	if s.APIReader == nil {
+		s.APIReader = mgr.GetAPIReader()
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.APIKey{}).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(secretToAPIKey)).
+		WatchesMetadata(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(secretToAPIKey),
+			builder.WithPredicates(managedSecretWatchPredicate()),
+		).
 		Complete(s)
 }

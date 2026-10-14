@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	v1alpha1 "github.com/kaito-project/llm-gateway-auth/api/v1alpha1"
 	"github.com/kaito-project/llm-gateway-auth/internal/keyindex"
@@ -83,6 +84,12 @@ func syncFixture(
 			Name:      keyutil.SecretName,
 			Namespace: namespace,
 			UID:       types.UID("secret-uid"),
+			Labels: map[string]string{
+				managedByMetadataKey: managedByValue,
+			},
+			Annotations: map[string]string{
+				managedByMetadataKey: managedByValue,
+			},
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: v1alpha1.GroupVersion.String(),
 				Kind:       "APIKey",
@@ -190,6 +197,18 @@ func TestBuildNamespaceEntriesRejectsIncoherentState(t *testing.T) {
 		name   string
 		mutate func(*v1alpha1.APIKey, *corev1.Secret)
 	}{
+		{
+			name: "missing managed annotation",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				delete(secret.Annotations, managedByMetadataKey)
+			},
+		},
+		{
+			name: "wrong managed annotation",
+			mutate: func(_ *v1alpha1.APIKey, secret *corev1.Secret) {
+				secret.Annotations[managedByMetadataKey] = "wrong"
+			},
+		},
 		{
 			name: "missing primary status",
 			mutate: func(apiKey *v1alpha1.APIKey, _ *corev1.Secret) {
@@ -356,7 +375,7 @@ func TestSyncReconcilePublishesAndReplacesNamespaceAtomically(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
 	idx := keyindex.New()
 	idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
 
 	reconcileSyncer(t, syncer, syncTestNamespace)
 	assert.Equal(t, 2, idx.Size())
@@ -378,7 +397,7 @@ func TestSyncReconcileRespondsToStatusOnlyChanges(t *testing.T) {
 	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", &firstExpiry, "", nil)
 	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
 	idx := keyindex.New()
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
 
 	reconcileSyncer(t, syncer, syncTestNamespace)
 	assert.True(t, firstExpiry.Equal(mustLookupRecord(t, idx, "sk-primary").ExpiresAt))
@@ -388,6 +407,288 @@ func TestSyncReconcileRespondsToStatusOnlyChanges(t *testing.T) {
 	require.NoError(t, c.Update(context.Background(), apiKey))
 	reconcileSyncer(t, syncer, syncTestNamespace)
 	assert.True(t, secondExpiry.Equal(mustLookupRecord(t, idx, "sk-primary").ExpiresAt))
+}
+
+func TestSyncReconcileUsesMetadataCacheAndDirectPayloadReader(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+	cachedAPIKeyGets := 0
+	cachedMetadataGets := 0
+	cachedSecretGets := 0
+	cachedClient := fake.NewClientBuilder().
+		WithScheme(setupScheme()).
+		WithObjects(apiKey, secret).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, delegate client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				switch obj.(type) {
+				case *v1alpha1.APIKey:
+					cachedAPIKeyGets++
+				case *metav1.PartialObjectMetadata:
+					cachedMetadataGets++
+				case *corev1.Secret:
+					cachedSecretGets++
+				}
+				return delegate.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	directMetadataGets := 0
+	directSecretGets := 0
+	directReader := fake.NewClientBuilder().
+		WithScheme(setupScheme()).
+		WithObjects(secret).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, delegate client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				switch obj.(type) {
+				case *metav1.PartialObjectMetadata:
+					directMetadataGets++
+				case *corev1.Secret:
+					directSecretGets++
+				}
+				return delegate.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	idx := keyindex.New()
+	syncer := &IndexSyncer{Client: cachedClient, APIReader: directReader, KeyIndex: idx}
+	reconcileSyncer(t, syncer, syncTestNamespace)
+
+	assert.Equal(t, 1, cachedAPIKeyGets)
+	assert.Equal(t, 1, cachedMetadataGets)
+	assert.Zero(t, cachedSecretGets, "cached client must never receive a Secret payload read")
+	assert.Zero(t, directMetadataGets, "direct reader is reserved for Secret payload reads")
+	assert.Equal(t, 1, directSecretGets)
+	assert.Equal(t, 1, idx.Size())
+}
+
+func TestSyncReconcileRequiresDirectPayloadReader(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+	cachedSecretGets := 0
+	c := fake.NewClientBuilder().
+		WithScheme(setupScheme()).
+		WithObjects(apiKey, secret).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, delegate client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.Secret); ok {
+					cachedSecretGets++
+				}
+				return delegate.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	idx := keyindex.New()
+	idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
+	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+
+	_, err := syncer.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: syncTestNamespace,
+		Name:      keyutil.SingletonName,
+	}})
+	require.ErrorContains(t, err, "APIReader is required")
+	assert.Zero(t, idx.Size())
+	assert.Zero(t, cachedSecretGets, "missing APIReader must not fall back to the cached client")
+}
+
+func TestSyncReconcileRequiresExactManagedAnnotationBeforeFullSecretRead(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+	}{
+		{name: "missing"},
+		{name: "empty", annotations: map[string]string{managedByMetadataKey: ""}},
+		{name: "wrong", annotations: map[string]string{managedByMetadataKey: "other"}},
+		{name: "wrong case", annotations: map[string]string{managedByMetadataKey: "LLM-Gateway-Auth-Service"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+			secret.Annotations = tt.annotations
+			metadataGets := 0
+			fullSecretGets := 0
+			c := fake.NewClientBuilder().
+				WithScheme(setupScheme()).
+				WithObjects(apiKey, secret).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, delegate client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						switch obj.(type) {
+						case *metav1.PartialObjectMetadata:
+							metadataGets++
+						case *corev1.Secret:
+							fullSecretGets++
+						}
+						return delegate.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+			idx := keyindex.New()
+			idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
+			syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
+
+			reconcileSyncer(t, syncer, syncTestNamespace)
+			assert.Zero(t, idx.Size())
+			assert.Equal(t, 1, metadataGets)
+			assert.Zero(t, fullSecretGets, "Secret payload must not be fetched before the annotation gate passes")
+		})
+	}
+}
+
+func TestSyncReconcileRequiresExactOwnerBeforeFullSecretRead(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*corev1.Secret)
+	}{
+		{
+			name: "missing controller owner",
+			mutate: func(secret *corev1.Secret) {
+				secret.OwnerReferences = nil
+			},
+		},
+		{
+			name: "mismatched controller UID",
+			mutate: func(secret *corev1.Secret) {
+				secret.OwnerReferences[0].UID = types.UID("other-apikey-uid")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+			tt.mutate(secret)
+			fullSecretGets := 0
+			c := fake.NewClientBuilder().
+				WithScheme(setupScheme()).
+				WithObjects(apiKey, secret).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, delegate client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*corev1.Secret); ok {
+							fullSecretGets++
+						}
+						return delegate.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+			idx := keyindex.New()
+			idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
+			syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
+
+			reconcileSyncer(t, syncer, syncTestNamespace)
+			assert.Zero(t, idx.Size())
+			assert.Zero(t, fullSecretGets, "Secret payload must not be fetched before the owner gate passes")
+		})
+	}
+}
+
+func TestSyncReconcileExactAnnotationDoesNotRequireManagedLabel(t *testing.T) {
+	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+	secret.Labels = nil
+	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
+	idx := keyindex.New()
+	syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
+
+	reconcileSyncer(t, syncer, syncTestNamespace)
+	assert.Equal(t, 1, idx.Size())
+	_, found := idx.Lookup(keyutil.HashKey("sk-primary"))
+	assert.True(t, found)
+}
+
+func TestSyncReconcileRejectsMetadataChangesBetweenMetadataAndFullReads(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*corev1.Secret)
+	}{
+		{
+			name: "annotation removed",
+			mutate: func(secret *corev1.Secret) {
+				delete(secret.Annotations, managedByMetadataKey)
+			},
+		},
+		{
+			name: "owner changed",
+			mutate: func(secret *corev1.Secret) {
+				secret.OwnerReferences[0].UID = types.UID("other-apikey-uid")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
+			metadataGets := 0
+			fullSecretGets := 0
+			c := fake.NewClientBuilder().
+				WithScheme(setupScheme()).
+				WithObjects(apiKey, secret).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, delegate client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if _, ok := obj.(*metav1.PartialObjectMetadata); ok {
+							metadataGets++
+							return delegate.Get(ctx, key, obj, opts...)
+						}
+						if fullSecret, ok := obj.(*corev1.Secret); ok {
+							fullSecretGets++
+							if err := delegate.Get(ctx, key, obj, opts...); err != nil {
+								return err
+							}
+							tt.mutate(fullSecret)
+							return nil
+						}
+						return delegate.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+			idx := keyindex.New()
+			idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
+			syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
+
+			reconcileSyncer(t, syncer, syncTestNamespace)
+			assert.Zero(t, idx.Size())
+			assert.Equal(t, 1, metadataGets)
+			assert.Equal(t, 1, fullSecretGets)
+		})
+	}
+}
+
+func TestManagedSecretWatchPredicate(t *testing.T) {
+	object := func(annotationValue string) *metav1.PartialObjectMetadata {
+		obj := &metav1.PartialObjectMetadata{}
+		if annotationValue != "" {
+			obj.Annotations = map[string]string{managedByMetadataKey: annotationValue}
+		}
+		return obj
+	}
+	exact := object(managedByValue)
+	missing := object("")
+	wrong := object("wrong")
+	predicate := managedSecretWatchPredicate()
+
+	assert.True(t, predicate.Create(event.CreateEvent{Object: exact}))
+	assert.False(t, predicate.Create(event.CreateEvent{Object: missing}))
+	assert.True(t, predicate.Delete(event.DeleteEvent{Object: exact}))
+	assert.False(t, predicate.Delete(event.DeleteEvent{Object: wrong}))
+	assert.True(t, predicate.Generic(event.GenericEvent{Object: exact}))
+	assert.False(t, predicate.Generic(event.GenericEvent{Object: missing}))
+
+	updates := []struct {
+		name     string
+		old, new client.Object
+		expected bool
+	}{
+		{name: "exact to exact", old: exact, new: exact, expected: true},
+		{name: "exact to missing", old: exact, new: missing, expected: true},
+		{name: "exact to wrong", old: exact, new: wrong, expected: true},
+		{name: "missing to exact", old: missing, new: exact, expected: true},
+		{name: "wrong to exact", old: wrong, new: exact, expected: true},
+		{name: "missing to wrong", old: missing, new: wrong},
+		{name: "wrong to missing", old: wrong, new: missing},
+	}
+	for _, tt := range updates {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, predicate.Update(event.UpdateEvent{ObjectOld: tt.old, ObjectNew: tt.new}))
+		})
+	}
 }
 
 func TestSyncReconcileClearsInvalidLifecycleStates(t *testing.T) {
@@ -441,7 +742,7 @@ func TestSyncReconcileClearsInvalidLifecycleStates(t *testing.T) {
 			idx := keyindex.New()
 			idx.Upsert("old-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "old"})
 			recorder := events.NewFakeRecorder(10)
-			syncer := &IndexSyncer{Client: c, KeyIndex: idx, Recorder: recorder}
+			syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx, Recorder: recorder}
 
 			reconcileSyncer(t, syncer, syncTestNamespace)
 			assert.Zero(t, idx.Size())
@@ -465,7 +766,7 @@ func TestSyncReconcileSecretReadErrorClearsStaleNamespace(t *testing.T) {
 		Build()
 	idx := keyindex.New()
 	idx.Upsert("stale-hash", keyindex.TenantRecord{Namespace: syncTestNamespace, KeyID: "stale"})
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
 
 	_, err := syncer.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
 		Namespace: syncTestNamespace,
@@ -488,7 +789,7 @@ func TestSyncReconcileNamespaceIsolationAndRecovery(t *testing.T) {
 		betaSecret,
 	).Build()
 	idx := keyindex.New()
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
 
 	reconcileSyncer(t, syncer, "team-alpha")
 	reconcileSyncer(t, syncer, "team-beta")
@@ -517,7 +818,7 @@ func TestSyncReconcileAPIKeyDeletionCannotBeUndoneByLingeringSecret(t *testing.T
 	apiKey, secret := syncFixture(syncTestNamespace, "sk-primary", nil, "", nil)
 	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
 	idx := keyindex.New()
-	syncer := &IndexSyncer{Client: c, KeyIndex: idx}
+	syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: idx}
 
 	reconcileSyncer(t, syncer, syncTestNamespace)
 	require.Equal(t, 1, idx.Size())
@@ -554,7 +855,7 @@ func TestSyncReconcileEmitsSafeCoherenceWarning(t *testing.T) {
 	secret.Data[keyutil.SecretKey] = []byte("sensitive-raw-key")
 	c := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(apiKey, secret).Build()
 	recorder := events.NewFakeRecorder(1)
-	syncer := &IndexSyncer{Client: c, KeyIndex: keyindex.New(), Recorder: recorder}
+	syncer := &IndexSyncer{Client: c, APIReader: c, KeyIndex: keyindex.New(), Recorder: recorder}
 
 	reconcileSyncer(t, syncer, syncTestNamespace)
 	select {

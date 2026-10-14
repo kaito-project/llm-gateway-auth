@@ -197,6 +197,15 @@ func (r *APIKeyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
+	if !hasManagedSecretMetadata(secret) {
+		if err := r.updateSecretWithRetry(ctx, secret, &apiKey, func(*corev1.Secret) (bool, error) {
+			return false, nil
+		}); err != nil {
+			r.emitEventfWithAction(&apiKey, corev1.EventTypeWarning, eventReasonSecretWriteFailed, eventActionUpdateSecret, "Failed to update managed metadata on Secret %q", secretName)
+			return ctrl.Result{}, err
+		}
+	}
+
 	if statusErr != nil || !hasPrimaryStatus || !primaryMatchesSecret(&apiKey, secret) {
 		logger.Info("Replacing incoherent API key material", "namespace", apiKey.Namespace, "secret", secretName)
 		r.emitEventf(&apiKey, corev1.EventTypeWarning, eventReasonSecretCorrupt, "Secret %q does not match primary key status; API key material will be regenerated", secretName)
@@ -252,8 +261,12 @@ func (r *APIKeyReconciler) updateSecretWithRetry(ctx context.Context, secret *co
 			return fmt.Errorf("secret %s/%s is not owned by APIKey %s", secret.Namespace, secret.Name, apiKey.Name)
 		}
 		changed, err := mutate(secret)
-		if err != nil || !changed {
+		if err != nil {
 			return err
+		}
+		metadataChanged := ensureManagedSecretMetadata(secret)
+		if !changed && !metadataChanged {
+			return nil
 		}
 		return r.Update(ctx, secret)
 	})
@@ -348,8 +361,8 @@ func primaryMatchesSecret(apiKey *v1alpha1.APIKey, secret *corev1.Secret) bool {
 	return len(rawKey) > 0 && keyutil.KeyIDFromHash(keyutil.HashKey(string(rawKey))) == apiKey.Status.Primary.KeyID
 }
 
-func hasExactAPIKeyControllerOwner(secret *corev1.Secret, apiKey *v1alpha1.APIKey) bool {
-	owner := metav1.GetControllerOf(secret)
+func hasExactAPIKeyControllerOwner(obj metav1.Object, apiKey *v1alpha1.APIKey) bool {
+	owner := metav1.GetControllerOf(obj)
 	return owner != nil &&
 		owner.APIVersion == v1alpha1.GroupVersion.String() &&
 		owner.Kind == "APIKey" &&
@@ -398,7 +411,10 @@ func (r *APIKeyReconciler) replaceKeySecret(
 			Name:      secretName,
 			Namespace: apiKey.Namespace,
 			Labels: map[string]string{
-				"kaito.sh/managed-by": "llm-auth-service",
+				managedByMetadataKey: managedByValue,
+			},
+			Annotations: map[string]string{
+				managedByMetadataKey: managedByValue,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(apiKey, v1alpha1.GroupVersion.WithKind("APIKey")),
