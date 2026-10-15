@@ -105,9 +105,10 @@ func main() {
 	idx := keyindex.New()
 
 	if err := (&controller.IndexSyncer{
-		Client:   mgr.GetClient(),
-		KeyIndex: idx,
-		Recorder: mgr.GetEventRecorder("apikey-authz"),
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		KeyIndex:  idx,
+		Recorder:  mgr.GetEventRecorder("apikey-authz"),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create IndexSyncer")
 		os.Exit(1)
