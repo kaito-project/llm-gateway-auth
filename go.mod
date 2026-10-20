@@ -3,7 +3,7 @@ module github.com/kaito-project/llm-gateway-auth
 go 1.27.0
 
 require (
-	github.com/envoyproxy/go-control-plane/envoy v1.39.0
+	github.com/envoyproxy/go-control-plane/envoy v1.40.0
 	github.com/go-logr/logr v1.4.4
 	github.com/go-logr/zapr v1.3.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
