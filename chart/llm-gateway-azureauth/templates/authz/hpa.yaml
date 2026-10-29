@@ -1,0 +1,38 @@
+{{- $autoscaling := .Values.authz.autoscaling -}}
+{{- if $autoscaling.enabled }}
+{{- if and (not $autoscaling.targetCPUUtilizationPercentage) (not $autoscaling.targetMemoryUtilizationPercentage) }}
+{{- fail "authz.autoscaling requires at least one CPU or memory utilization target" }}
+{{- end }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "llm-gateway-azureauth.fullname" . }}-authz
+  namespace: {{ include "llm-gateway-azureauth.namespace" . }}
+  labels:
+    {{- include "llm-gateway-azureauth.labels" . | nindent 4 }}
+    {{- include "llm-gateway-azureauth.authz.selectorLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "llm-gateway-azureauth.fullname" . }}-authz
+  minReplicas: {{ $autoscaling.minReplicas }}
+  maxReplicas: {{ $autoscaling.maxReplicas }}
+  metrics:
+    {{- with $autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ . }}
+    {{- end }}
+    {{- with $autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ . }}
+    {{- end }}
+{{- end }}

@@ -70,7 +70,10 @@ make helm-upgrade
 make helm-uninstall
 ```
 
-Chart values are documented in [chart/llm-gateway-apikey/values.yaml](chart/llm-gateway-apikey/values.yaml).
+Chart values are documented in:
+
+- [API-key chart values](chart/llm-gateway-apikey/values.yaml)
+- [Azure authentication chart values](chart/llm-gateway-azureauth/values.yaml)
 
 ## Contributing
 

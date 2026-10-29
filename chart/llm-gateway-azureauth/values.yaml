@@ -26,7 +26,16 @@ authz:
     repository: ""
     tag: ""                # Defaults to .Chart.AppVersion when empty.
     pullPolicy: ""         # Defaults to global.imagePullPolicy when empty.
-  replicaCount: 2          # >= 2 for high availability.
+  replicaCount: 2          # Used when autoscaling is disabled; >= 2 for high availability.
+  # Requires Metrics Server. Resource utilization includes all Pod containers,
+  # including an injected Istio sidecar.
+  autoscaling:
+    enabled: false
+    minReplicas: 2         # Preserve the default HA replica count when autoscaling is enabled.
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    # Optional. Leave empty to scale on CPU only.
+    targetMemoryUtilizationPercentage: ""
   resources:
     requests:
       cpu: 50m
