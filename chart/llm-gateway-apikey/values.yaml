@@ -90,8 +90,8 @@ authz:
       cpu: 50m
       memory: 64Mi
     limits:
-      cpu: 500m
-      memory: 256Mi
+      cpu: 1
+      memory: 1Gi
   serviceAccount:
     create: true
     name: ""              # Auto-derived: "<fullname>-authz"
