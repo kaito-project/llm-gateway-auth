@@ -75,14 +75,23 @@ authz:
     repository: ""
     tag: ""
     pullPolicy: ""
-  replicaCount: 3         # >= 2 for high availability.
+  replicaCount: 3         # Used when autoscaling is disabled; >= 2 for high availability.
+  # Requires Metrics Server. Resource utilization includes all Pod containers,
+  # including an injected Istio sidecar.
+  autoscaling:
+    enabled: false
+    minReplicas: 3         # Preserve the default HA replica count when autoscaling is enabled.
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 80
+    # Optional. Leave empty to scale on CPU only.
+    targetMemoryUtilizationPercentage: ""
   resources:
     requests:
       cpu: 50m
       memory: 64Mi
     limits:
-      cpu: 500m
-      memory: 256Mi
+      cpu: 1
+      memory: 1Gi
   serviceAccount:
     create: true
     name: ""              # Auto-derived: "<fullname>-authz"

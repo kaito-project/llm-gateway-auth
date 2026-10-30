@@ -7,7 +7,9 @@ metadata:
     {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
     {{- include "llm-gateway-apikey.authz.selectorLabels" . | nindent 4 }}
 spec:
+  {{- if not .Values.authz.autoscaling.enabled }}
   replicas: {{ .Values.authz.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "llm-gateway-apikey.authz.selectorLabels" . | nindent 6 }}
