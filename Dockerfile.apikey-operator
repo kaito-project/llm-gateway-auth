@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # ── Stage 1: Build ────────────────────────────────────────────────
-FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27@sha256:8ce2353285e61b0e8faed1fc668d220aac31838df923d9fc2ca9a17887177a63 AS builder
+FROM mcr.microsoft.com/oss/go/microsoft/golang:1.27@sha256:7a193a3f8ee2ffc8c1420affd7e13cfee4e5d1291a54b1dee370ee1ea3b5241a AS builder
 WORKDIR /workspace
 
 # Cache module downloads separately from source.
