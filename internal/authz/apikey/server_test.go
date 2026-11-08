@@ -273,6 +273,16 @@ func TestCheck_ValidXAPIKey(t *testing.T) {
 	assert.Equal(t, result.KeyID, headers["x-key-id"])
 }
 
+func TestAllowResponse_RemovesCredentialHeaders(t *testing.T) {
+	okResp := allowResponse("team-alpha", "key-id").GetOkResponse()
+	require.NotNil(t, okResp)
+	assert.ElementsMatch(t, []string{
+		authorizationHeader,
+		apiKeyHeader,
+		xAPIKeyHeader,
+	}, okResp.GetHeadersToRemove())
+}
+
 func TestCheck_HeaderPrecedence(t *testing.T) {
 	srv, idx := newTestServer()
 	authResult, _ := keyutil.GenerateAPIKey("sk-")

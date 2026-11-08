@@ -13,11 +13,6 @@ on:
       tag:
         description: 'Existing release tag to publish/test (e.g. v0.1.0)'
         required: true
-      enable_trivy_scan:
-        description: 'Run Trivy CVE scan on built images'
-        type: boolean
-        required: false
-        default: true
 
 permissions:
   id-token: write
@@ -30,9 +25,6 @@ permissions:
 env:
   GO_VERSION: '1.27'
   GHCR_REGISTRY: ghcr.io
-  # release events have no inputs → always scan.
-  # workflow_dispatch → honor the boolean input directly (uncheck the box to skip).
-  ENABLE_TRIVY_SCAN: ${{ github.event_name == 'release' || inputs.enable_trivy_scan }}
 
 jobs:
   check-tag:
@@ -96,7 +88,6 @@ jobs:
           AZURE_AUTHZ_IMG: llm-gateway-local/azure-authz:${{ needs.check-tag.outputs.version }}
 
       - name: Scan apikey-operator
-        if: env.ENABLE_TRIVY_SCAN == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: llm-gateway-local/apikey-operator:${{ needs.check-tag.outputs.version }}
@@ -108,7 +99,6 @@ jobs:
           timeout: '5m0s'
 
       - name: Scan apikey-authz
-        if: env.ENABLE_TRIVY_SCAN == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: llm-gateway-local/apikey-authz:${{ needs.check-tag.outputs.version }}
@@ -120,7 +110,6 @@ jobs:
           timeout: '5m0s'
 
       - name: Scan azure-authz
-        if: env.ENABLE_TRIVY_SCAN == 'true'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: llm-gateway-local/azure-authz:${{ needs.check-tag.outputs.version }}

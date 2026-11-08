@@ -222,6 +222,11 @@ func allowResponse(namespace, keyID string) *authv3.CheckResponse {
 		},
 		HttpResponse: &authv3.CheckResponse_OkResponse{
 			OkResponse: &authv3.OkHttpResponse{
+				HeadersToRemove: []string{
+					authorizationHeader,
+					apiKeyHeader,
+					xAPIKeyHeader,
+				},
 				Headers: []*corev3.HeaderValueOption{
 					{
 						Header: &corev3.HeaderValue{
