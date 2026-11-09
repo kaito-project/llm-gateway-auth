@@ -12,8 +12,8 @@ ARCH             ?= amd64
 OUTPUT_TYPE      ?= type=registry
 BUILD_FLAGS      ?=
 BUILDX_BUILDER_NAME ?= img-builder
-QEMU_VERSION        ?= 7.2.0-1
-BUILDKIT_VERSION    ?= v0.18.1
+QEMU_IMAGE          ?= mcr.microsoft.com/mirror/docker/multiarch/qemu-user-static:7.2.0-1@sha256:fe60359c92e86a43cc87b3d906006245f77bfc0565676b80004cc666e4feb9f0
+BUILDKIT_IMAGE      ?= mcr.microsoft.com/oss/v2/moby/buildkit:v0.18.1@sha256:f0a495c3ce0b02b55ca9ef04e24ee19a277c5a82bc6203a0381e1cd4d3932a7e
 
 # Helm configuration
 CHART_DIR ?= chart/llm-gateway-apikey
@@ -148,8 +148,8 @@ clean: ## Remove build artifacts.
 docker-buildx:
 ifeq ($(CONTAINER_RUNTIME),docker)
 	@if ! docker buildx ls | grep $(BUILDX_BUILDER_NAME); then \
-		docker run --rm --privileged mcr.microsoft.com/mirror/docker/multiarch/qemu-user-static:$(QEMU_VERSION) --reset -p yes; \
-		docker buildx create --name $(BUILDX_BUILDER_NAME) --driver-opt image=mcr.microsoft.com/oss/v2/moby/buildkit:$(BUILDKIT_VERSION) --use; \
+		docker run --rm --privileged $(QEMU_IMAGE) --reset -p yes; \
+		docker buildx create --name $(BUILDX_BUILDER_NAME) --driver-opt image=$(BUILDKIT_IMAGE) --use; \
 		docker buildx inspect $(BUILDX_BUILDER_NAME) --bootstrap; \
 	else \
 		docker buildx use $(BUILDX_BUILDER_NAME); \

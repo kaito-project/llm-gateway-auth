@@ -3,10 +3,8 @@ name: Unit Tests
 on:
   pull_request:
     branches: [main]
-    paths-ignore: ["docs/**", "**.md"]
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**.md"]
 
 concurrency:
   group: unit-tests-${{ github.ref }}

@@ -27,7 +27,7 @@ permissions:
 env:
   GO_VERSION: '1.27'
   GHCR_REGISTRY: ghcr.io
-  # Manual-only workflow → honor the boolean input directly (uncheck the box to skip).
+  # Manual runs can skip while Azure Linux fixes catch up.
   ENABLE_TRIVY_SCAN: ${{ inputs.enable_trivy_scan }}
 
 jobs:
@@ -70,25 +70,18 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.check-tag.outputs.tag }}
 
-      - name: Login to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ${{ env.GHCR_REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push apikey-operator to GHCR
-        run: make image-build-operator OUTPUT_TYPE=type=registry
+      - name: Build apikey-operator locally
+        run: make image-build-operator OUTPUT_TYPE=type=docker
         env:
           OPERATOR_IMG: ${{ steps.registries.outputs.ghcr_repository }}/apikey-operator:${{ needs.check-tag.outputs.version }}
 
-      - name: Build and push apikey-authz to GHCR
-        run: make image-build-authz OUTPUT_TYPE=type=registry
+      - name: Build apikey-authz locally
+        run: make image-build-authz OUTPUT_TYPE=type=docker
         env:
           AUTHZ_IMG: ${{ steps.registries.outputs.ghcr_repository }}/apikey-authz:${{ needs.check-tag.outputs.version }}
 
-      - name: Build and push azure-authz to GHCR
-        run: make image-build-azure-authz OUTPUT_TYPE=type=registry
+      - name: Build azure-authz locally
+        run: make image-build-azure-authz OUTPUT_TYPE=type=docker
         env:
           AZURE_AUTHZ_IMG: ${{ steps.registries.outputs.ghcr_repository }}/azure-authz:${{ needs.check-tag.outputs.version }}
 
@@ -103,9 +96,6 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '5m0s'
-        env:
-          TRIVY_USERNAME: ${{ github.actor }}
-          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan apikey-authz
         if: env.ENABLE_TRIVY_SCAN == 'true'
@@ -118,9 +108,6 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '5m0s'
-        env:
-          TRIVY_USERNAME: ${{ github.actor }}
-          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan azure-authz
         if: env.ENABLE_TRIVY_SCAN == 'true'
@@ -133,16 +120,26 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
           timeout: '5m0s'
-        env:
-          TRIVY_USERNAME: ${{ github.actor }}
-          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
 
-  build-push-mcr-images:
+      - name: Login to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push images to GHCR
+        run: |
+          docker push "${{ steps.registries.outputs.ghcr_repository }}/apikey-operator:${{ needs.check-tag.outputs.version }}"
+          docker push "${{ steps.registries.outputs.ghcr_repository }}/apikey-authz:${{ needs.check-tag.outputs.version }}"
+          docker push "${{ steps.registries.outputs.ghcr_repository }}/azure-authz:${{ needs.check-tag.outputs.version }}"
+
+  build-scan-push-mcr-images:
     runs-on:
       labels:
         - self-hosted
         - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
-        - JobId=buildPushMcrImages-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+        - JobId=buildScanPushMcrImages-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     needs: [check-tag, build-scan-push-ghcr-images]
     environment: publish-mcr
     steps:
@@ -157,29 +154,71 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.check-tag.outputs.tag }}
 
+      - name: Build apikey-operator locally
+        run: make image-build-operator OUTPUT_TYPE=type=docker
+        env:
+          OPERATOR_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-operator:${{ needs.check-tag.outputs.version }}
+
+      - name: Build apikey-authz locally
+        run: make image-build-authz OUTPUT_TYPE=type=docker
+        env:
+          AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ needs.check-tag.outputs.version }}
+
+      - name: Build azure-authz locally
+        run: make image-build-azure-authz OUTPUT_TYPE=type=docker
+        env:
+          AZURE_AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ needs.check-tag.outputs.version }}
+
+      - name: Scan apikey-operator
+        if: env.ENABLE_TRIVY_SCAN == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-operator:${{ needs.check-tag.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+
+      - name: Scan apikey-authz
+        if: env.ENABLE_TRIVY_SCAN == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ needs.check-tag.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+
+      - name: Scan azure-authz
+        if: env.ENABLE_TRIVY_SCAN == 'true'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ needs.check-tag.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+
       - name: Authenticate to ACR
         run: |
           az login --identity
           az acr login -n ${{ secrets.MCR_REGISTRY }}
 
-      - name: Build and push apikey-operator to MCR
-        run: make image-build-operator OUTPUT_TYPE=type=registry
-        env:
-          OPERATOR_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-operator:${{ needs.check-tag.outputs.version }}
-
-      - name: Build and push apikey-authz to MCR
-        run: make image-build-authz OUTPUT_TYPE=type=registry
-        env:
-          AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ needs.check-tag.outputs.version }}
-
-      - name: Build and push azure-authz to MCR
-        run: make image-build-azure-authz OUTPUT_TYPE=type=registry
-        env:
-          AZURE_AUTHZ_IMG: ${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ needs.check-tag.outputs.version }}
+      - name: Push images to MCR
+        run: |
+          docker push "${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-operator:${{ needs.check-tag.outputs.version }}"
+          docker push "${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/apikey-authz:${{ needs.check-tag.outputs.version }}"
+          docker push "${{ secrets.MCR_REGISTRY }}/unlisted/aks/kaito/azure-authz:${{ needs.check-tag.outputs.version }}"
 
   publish-github-helm-chart:
     runs-on: ubuntu-latest
-    needs: [check-tag, build-push-mcr-images]
+    needs: [check-tag, build-scan-push-mcr-images]
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -215,7 +254,7 @@ jobs:
         - self-hosted
         - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
         - JobId=publishMcrHelmChart-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
-    needs: [check-tag, build-push-mcr-images]
+    needs: [check-tag, build-scan-push-mcr-images]
     environment: publish-mcr
     steps:
       - name: Checkout

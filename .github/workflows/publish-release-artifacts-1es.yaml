@@ -30,8 +30,7 @@ permissions:
 env:
   GO_VERSION: '1.27'
   GHCR_REGISTRY: ghcr.io
-  # release events have no inputs → always scan.
-  # workflow_dispatch → honor the boolean input directly (uncheck the box to skip).
+  # Release events always scan; manual runs can skip while Azure Linux fixes catch up.
   ENABLE_TRIVY_SCAN: ${{ github.event_name == 'release' || inputs.enable_trivy_scan }}
 
 jobs:

@@ -12,7 +12,9 @@
 # Environment variables (all optional):
 #   KIND_CLUSTER_NAME   default: llm-gateway-test
 #   KIND_VERSION        default: from versions.env
+#   KIND_SHA256_LINUX_* pinned checksums from versions.env
 #   ISTIO_VERSION       default: from versions.env
+#   ISTIOCTL_SHA256_LINUX_* pinned checksums from versions.env
 #   NAMESPACE           default: llm-gateway
 #   SKIP_ISTIO          set to "true" to create cluster only (no Istio)
 #   REINSTALL_ISTIO     set to "true" to force istio reinstall
@@ -35,7 +37,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Save any caller-supplied overrides before sourcing the file.
 _KIND_VERSION="${KIND_VERSION:-}"
+_KIND_SHA256_LINUX_AMD64="${KIND_SHA256_LINUX_AMD64:-}"
+_KIND_SHA256_LINUX_ARM64="${KIND_SHA256_LINUX_ARM64:-}"
 _ISTIO_VERSION="${ISTIO_VERSION:-}"
+_ISTIOCTL_SHA256_LINUX_AMD64="${ISTIOCTL_SHA256_LINUX_AMD64:-}"
+_ISTIOCTL_SHA256_LINUX_ARM64="${ISTIOCTL_SHA256_LINUX_ARM64:-}"
 
 # Source pinned versions.
 # shellcheck source=../versions.env
@@ -48,7 +54,11 @@ fi
 
 # Restore caller overrides (env vars beat the file).
 KIND_VERSION="${_KIND_VERSION:-${KIND_VERSION}}"
+KIND_SHA256_LINUX_AMD64="${_KIND_SHA256_LINUX_AMD64:-${KIND_SHA256_LINUX_AMD64:-}}"
+KIND_SHA256_LINUX_ARM64="${_KIND_SHA256_LINUX_ARM64:-${KIND_SHA256_LINUX_ARM64:-}}"
 ISTIO_VERSION="${_ISTIO_VERSION:-${ISTIO_VERSION}}"
+ISTIOCTL_SHA256_LINUX_AMD64="${_ISTIOCTL_SHA256_LINUX_AMD64:-${ISTIOCTL_SHA256_LINUX_AMD64:-}}"
+ISTIOCTL_SHA256_LINUX_ARM64="${_ISTIOCTL_SHA256_LINUX_ARM64:-${ISTIOCTL_SHA256_LINUX_ARM64:-}}"
 
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-llm-gateway-test}"
 NAMESPACE="${NAMESPACE:-llm-gateway}"
@@ -99,6 +109,22 @@ ok()   { echo "✓ $*"; }
 warn() { echo "⚠ $*" >&2; }
 die()  { echo "✗ ERROR: $*" >&2; exit 1; }
 
+verify_sha256() {
+  local file="$1"
+  local expected="$2"
+  local actual
+
+  [[ -n "${expected}" ]] || die "No SHA-256 checksum configured for ${file}"
+  if command -v sha256sum &>/dev/null; then
+    actual="$(sha256sum "${file}" | cut -d ' ' -f 1)"
+  elif command -v shasum &>/dev/null; then
+    actual="$(shasum -a 256 "${file}" | cut -d ' ' -f 1)"
+  else
+    die "Neither sha256sum nor shasum is available"
+  fi
+  [[ "${actual}" == "${expected}" ]] || die "SHA-256 mismatch for ${file}: expected ${expected}, got ${actual}"
+}
+
 # Stage logging with elapsed time tracking.
 stage_begin() {
   _stage_start="$(date +%s)"
@@ -126,12 +152,21 @@ install_kind() {
     brew install kind
     ok "kind installed via Homebrew."
   else
-    # On Linux (CI), download the binary directly.
+    # On Linux (CI), download the binary directly and verify the repository-pinned checksum.
     mkdir -p "${ISTIOCTL_INSTALL_DIR}"
     local url="https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VERSION}/kind-${OS}-${ARCH}"
+    local checksum
+    case "${ARCH}" in
+      amd64) checksum="${KIND_SHA256_LINUX_AMD64}" ;;
+      arm64) checksum="${KIND_SHA256_LINUX_ARM64}" ;;
+    esac
+    local tmpdir
+    tmpdir="$(mktemp -d)"
     log "Downloading kind v${KIND_VERSION} from ${url}"
-    curl -sSL "${url}" -o "${ISTIOCTL_INSTALL_DIR}/kind"
-    chmod +x "${ISTIOCTL_INSTALL_DIR}/kind"
+    curl --fail --show-error --location "${url}" --output "${tmpdir}/kind"
+    verify_sha256 "${tmpdir}/kind" "${checksum}"
+    install -m 0755 "${tmpdir}/kind" "${ISTIOCTL_INSTALL_DIR}/kind"
+    rm -rf "${tmpdir}"
     export PATH="${ISTIOCTL_INSTALL_DIR}:${PATH}"
     ok "kind v${KIND_VERSION} installed to ${ISTIOCTL_INSTALL_DIR}/kind"
   fi
@@ -147,24 +182,22 @@ install_istioctl() {
     brew install istioctl
     ok "istioctl installed via Homebrew."
   else
-    # On Linux (CI), download directly for pinned version control.
+    # On Linux (CI), download the pinned release archive and verify its checksum.
     mkdir -p "${ISTIOCTL_INSTALL_DIR}"
-    log "Downloading istioctl v${ISTIO_VERSION}"
+    local archive="istioctl-${ISTIO_VERSION}-linux-${ARCH}.tar.gz"
+    local url="https://github.com/istio/istio/releases/download/${ISTIO_VERSION}/${archive}"
+    local checksum
+    case "${ARCH}" in
+      amd64) checksum="${ISTIOCTL_SHA256_LINUX_AMD64}" ;;
+      arm64) checksum="${ISTIOCTL_SHA256_LINUX_ARM64}" ;;
+    esac
     local tmpdir
     tmpdir="$(mktemp -d)"
-    pushd "${tmpdir}" > /dev/null
-    curl -sSL https://istio.io/downloadIstio | \
-      ISTIO_VERSION="${ISTIO_VERSION}" TARGET_ARCH="${ARCH}" sh - 2>&1 | tail -5
-    local istio_bin="${tmpdir}/istio-${ISTIO_VERSION}/bin/istioctl"
-    if [[ -f "${istio_bin}" ]]; then
-      cp "${istio_bin}" "${ISTIOCTL_INSTALL_DIR}/istioctl"
-      chmod +x "${ISTIOCTL_INSTALL_DIR}/istioctl"
-    else
-      popd > /dev/null
-      rm -rf "${tmpdir}"
-      die "istioctl binary not found after download"
-    fi
-    popd > /dev/null
+    log "Downloading istioctl v${ISTIO_VERSION} from ${url}"
+    curl --fail --show-error --location "${url}" --output "${tmpdir}/${archive}"
+    verify_sha256 "${tmpdir}/${archive}" "${checksum}"
+    tar -xzf "${tmpdir}/${archive}" -C "${tmpdir}" istioctl
+    install -m 0755 "${tmpdir}/istioctl" "${ISTIOCTL_INSTALL_DIR}/istioctl"
     rm -rf "${tmpdir}"
     export PATH="${ISTIOCTL_INSTALL_DIR}:${PATH}"
     ok "istioctl v${ISTIO_VERSION} installed to ${ISTIOCTL_INSTALL_DIR}/istioctl"
