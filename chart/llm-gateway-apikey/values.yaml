@@ -47,6 +47,17 @@ operator:
   # and zone with whenUnsatisfiable: ScheduleAnyway). Set to a non-empty list
   # to fully replace the default; an empty list keeps the default.
   topologySpreadConstraints: []
+  # PriorityClass of the operator pods. AKS App Routing runs each namespace
+  # gateway at system-cluster-critical and the scheduler preempts only
+  # lower-priority pods, so at the same class a gateway that does not fit on a
+  # full node waits for a new node instead of evicting a replica. Empty omits
+  # the field (priority 0).
+  priorityClassName: system-cluster-critical
+  # Voluntary disruptions, such as Karpenter consolidation and node drains,
+  # evict at most maxUnavailable replicas at a time.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
 
   # ── Leader Election ──
   leaderElection:
@@ -104,6 +115,17 @@ authz:
   # and zone with whenUnsatisfiable: ScheduleAnyway). Set to a non-empty list
   # to fully replace the default; an empty list keeps the default.
   topologySpreadConstraints: []
+  # PriorityClass of the authz pods. AKS App Routing runs each namespace
+  # gateway at system-cluster-critical and the scheduler preempts only
+  # lower-priority pods, so at the same class a gateway that does not fit on a
+  # full node waits for a new node instead of evicting a replica. Empty omits
+  # the field (priority 0).
+  priorityClassName: system-cluster-critical
+  # Voluntary disruptions, such as Karpenter consolidation and node drains,
+  # evict at most maxUnavailable replicas at a time.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
 
   # Ports (match cmd/apikey-authz flag defaults).
   grpcPort: 9001
