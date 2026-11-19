@@ -180,11 +180,10 @@ for chart in apikey azureauth; do
   fi
 done
 
-# Each Deployment runs at system-cluster-critical by default, the class AKS App
-# Routing runs the namespace gateway at, so a gateway that does not fit on a
-# full node cannot preempt it; an empty value omits the field. Each also gets a
-# PodDisruptionBudget that selects its pods and lets voluntary disruptions evict
-# one replica at a time.
+# Each Deployment runs at system-cluster-critical by default, so the scheduler
+# preempts it only for a higher-priority pod; an empty value omits the field.
+# Each also gets a PodDisruptionBudget that selects its pods and lets voluntary
+# disruptions evict one replica at a time.
 for workload in apikey:authz:apikey-authz apikey:operator:apikey-operator azureauth:authz:azure-authz; do
   IFS=: read -r chart prefix component <<<"${workload}"
   render="render_${chart}"
