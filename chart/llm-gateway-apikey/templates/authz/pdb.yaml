@@ -1,0 +1,15 @@
+{{- if .Values.authz.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "llm-gateway-apikey.fullname" . }}-authz
+  namespace: {{ include "llm-gateway-apikey.namespace" . }}
+  labels:
+    {{- include "llm-gateway-apikey.labels" . | nindent 4 }}
+    {{- include "llm-gateway-apikey.authz.selectorLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.authz.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "llm-gateway-apikey.authz.selectorLabels" . | nindent 6 }}
+{{- end }}
