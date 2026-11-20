@@ -179,3 +179,33 @@ for chart in apikey azureauth; do
     fail "${chart} HPA renders without a CPU or memory metric"
   fi
 done
+
+# Each Deployment runs at system-cluster-critical by default, so the scheduler
+# preempts it only for a higher-priority pod; an empty value omits the field.
+# Each also gets a PodDisruptionBudget that selects its pods and lets voluntary
+# disruptions evict one replica at a time.
+for workload in apikey:authz:apikey-authz apikey:operator:apikey-operator azureauth:authz:azure-authz; do
+  IFS=: read -r chart prefix component <<<"${workload}"
+  render="render_${chart}"
+  deployment="${TMP_DIR}/${component}-deployment.yaml"
+  no_priority="${TMP_DIR}/${component}-no-priority.yaml"
+  pdb="${TMP_DIR}/${component}-pdb.yaml"
+
+  "${render}" --show-only "templates/${prefix}/deployment.yaml" >"${deployment}"
+  "${render}" --set "${prefix}.priorityClassName=" \
+    --show-only "templates/${prefix}/deployment.yaml" >"${no_priority}"
+  assert_contains "${deployment}" '^      priorityClassName: system-cluster-critical$' \
+    "${component} Deployment does not run at system-cluster-critical"
+  assert_not_contains "${no_priority}" 'priorityClassName' \
+    "${component} Deployment keeps a priorityClassName that was set to empty"
+
+  "${render}" --show-only "templates/${prefix}/pdb.yaml" >"${pdb}"
+  assert_contains "${pdb}" '^kind: PodDisruptionBudget$' \
+    "${component} PodDisruptionBudget has the wrong kind"
+  assert_contains "${pdb}" '^  namespace: llm-gateway$' \
+    "${component} PodDisruptionBudget has the wrong namespace"
+  assert_contains "${pdb}" '^  maxUnavailable: 1$' \
+    "${component} PodDisruptionBudget does not evict one replica at a time"
+  assert_contains "${pdb}" "^      app.kubernetes.io/component: ${component}$" \
+    "${component} PodDisruptionBudget does not select the ${component} pods"
+done

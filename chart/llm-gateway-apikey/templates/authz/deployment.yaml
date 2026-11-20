@@ -29,6 +29,9 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "llm-gateway-apikey.authz.serviceAccountName" . }}
+      {{- with .Values.authz.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532

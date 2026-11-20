@@ -51,6 +51,16 @@ authz:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # PriorityClass of the authz pods. ext_authz serves every request through the
+  # gateway, so it runs at system-cluster-critical by default; the scheduler
+  # then preempts it only for a higher-priority pod. Empty omits the field
+  # (priority 0).
+  priorityClassName: system-cluster-critical
+  # Voluntary disruptions, such as node drains and node consolidation, evict at
+  # most maxUnavailable replicas at a time.
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
 
   # Ports (match cmd/azure-authz flag defaults).
   grpcPort: 9001
